@@ -259,10 +259,12 @@ def build_daily_history(
         df["btc_funding_annualized_pct"] = np.nan
 
     # mNAV becomes meaningful only after the BTC pivot.
-    df.loc[df.index < pd.Timestamp("2020-08-11"), [
+    pre_pivot = df.index < pd.Timestamp("2020-08-11")
+    df.loc[pre_pivot, [
         "mnav", "ratio_dd_from_90d_peak_pct", "ratio_multiple_off_2y_low",
-        "lead_lag_diverging", "gamma_armed", "gamma_elevated",
     ]] = np.nan
+    # Bool columns can't hold NaN in pandas 2.x — use False (signal dormant).
+    df.loc[pre_pivot, ["lead_lag_diverging", "gamma_armed", "gamma_elevated"]] = False
 
     keep = [
         "mstr", "btc", "btc_holdings", "diluted_shares", "market_cap", "btc_nav",
