@@ -51,6 +51,7 @@ DATA.mkdir(exist_ok=True)
 LATEST = DATA / "latest.json"
 HISTORY = DATA / "history.csv"
 DAILY = DATA / "daily_history.csv"
+OBSERVED = DATA / "observed_state.csv"  # daily live readings; self-healing source of truth
 
 sys.path.insert(0, str(ROOT / "scripts"))
 from historical_milestones import daily_btc_holdings, daily_diluted_shares  # noqa: E402
@@ -183,16 +184,77 @@ def implied_vol_atm(ticker: str = "MSTR") -> float:
 
 
 # ─────────────────── daily-resolution signal table ──────────────────────
+def load_observed() -> pd.DataFrame:
+    """Daily live observations of holdings/shares accumulated by past cron runs."""
+    if not OBSERVED.exists():
+        return pd.DataFrame(columns=["btc_holdings", "diluted_shares"])
+    df = pd.read_csv(OBSERVED, parse_dates=["date"]).set_index("date")
+    return df.sort_index()
+
+
+def upsert_observed(date: pd.Timestamp, btc_holdings: int | None, diluted_shares: int | None) -> pd.DataFrame:
+    """Append today's observed values to the running record. Idempotent for same-day reruns."""
+    df = load_observed()
+    row = {}
+    if btc_holdings:
+        row["btc_holdings"] = float(btc_holdings)
+    if diluted_shares:
+        row["diluted_shares"] = float(diluted_shares)
+    if not row:
+        return df
+    if date in df.index:
+        # Take MAX so accidental low scrapes don't downgrade prior reads.
+        for k, v in row.items():
+            existing = df.at[date, k] if k in df.columns and pd.notna(df.at[date, k]) else None
+            df.at[date, k] = max(existing, v) if existing is not None else v
+    else:
+        df.loc[date] = row
+    df = df.sort_index()
+    df.index.name = "date"
+    df.to_csv(OBSERVED, date_format="%Y-%m-%d")
+    return df
+
+
+def merge_holdings_shares(
+    milestones_holdings: pd.Series,
+    milestones_shares: pd.Series,
+    observed: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+) -> tuple[pd.Series, pd.Series]:
+    """
+    For each date in `idx`, prefer observed live values over hardcoded milestones.
+    Both series are monotonically non-decreasing (Saylor only buys; ATM only dilutes),
+    so we ffill within each source then take the running max across sources.
+
+    Result: as the cron accumulates daily observations, historical chart points
+    become accurate without ever needing to update historical_milestones.py.
+    """
+    base_h = milestones_holdings.reindex(idx).ffill()
+    base_s = milestones_shares.reindex(idx).ffill()
+
+    if not observed.empty:
+        if "btc_holdings" in observed.columns:
+            obs_h = observed["btc_holdings"].reindex(idx).ffill()
+            base_h = pd.concat([base_h, obs_h], axis=1).max(axis=1)
+        if "diluted_shares" in observed.columns:
+            obs_s = observed["diluted_shares"].reindex(idx).ffill()
+            base_s = pd.concat([base_s, obs_s], axis=1).max(axis=1)
+
+    # Enforce monotonic non-decreasing (defensive).
+    return base_h.cummax().rename("btc_holdings"), base_s.cummax().rename("diluted_shares")
+
+
 def build_daily_history(
     mstr: pd.Series,
     btc: pd.Series,
     pref_hist: dict[str, pd.DataFrame],
     funding: pd.DataFrame,
+    observed: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Compute every signal at daily resolution, since BTC pivot when applicable."""
 
-    holdings = daily_btc_holdings(end_date=mstr.index.max())
-    shares = daily_diluted_shares(end_date=mstr.index.max())
+    milestones_h = daily_btc_holdings(end_date=mstr.index.max())
+    milestones_s = daily_diluted_shares(end_date=mstr.index.max())
 
     # Master daily index — union of all dates from MSTR's full history.
     idx = pd.date_range(mstr.index.min(), mstr.index.max(), freq="D")
@@ -201,8 +263,12 @@ def build_daily_history(
 
     df["mstr"] = mstr.reindex(idx).ffill()
     df["btc"] = btc.reindex(idx).ffill()
-    df["btc_holdings"] = holdings.reindex(idx).ffill()
-    df["diluted_shares"] = shares.reindex(idx).ffill()
+
+    # Merge milestones with self-healing observed history.
+    obs = observed if observed is not None else load_observed()
+    h_series, s_series = merge_holdings_shares(milestones_h, milestones_s, obs, idx)
+    df["btc_holdings"] = h_series
+    df["diluted_shares"] = s_series
 
     df["btc_nav"] = df["btc_holdings"] * df["btc"]
     df["market_cap"] = df["mstr"] * df["diluted_shares"]
@@ -418,20 +484,25 @@ def main() -> int:
     funding = fetch_funding_history(days=400)
     print(f"  funding rows: {len(funding)}")
 
-    print("Computing daily history table…")
-    daily = build_daily_history(mstr, btc, pref_hist, funding)
-    # Patch the most recent row with live values where stale.
-    last_idx = daily.index[-1]
-    daily.loc[last_idx, "btc_holdings"] = max(int(daily.loc[last_idx, "btc_holdings"]), int(live_holdings))
-    # Live shares from yfinance fast_info
+    # Persist today's live readings BEFORE building daily history so the merge
+    # picks them up. This makes the historical chart self-healing — milestones
+    # only need updating to backfill the pre-launch era.
+    today = pd.Timestamp.utcnow().normalize().tz_localize(None)
     live_shares_info = _safe(lambda: yf.Ticker("MSTR").fast_info.get("shares"), None)
-    if live_shares_info:
-        live_shares = int(live_shares_info)
-        daily.loc[last_idx, "diluted_shares"] = max(float(daily.loc[last_idx, "diluted_shares"]), float(live_shares))
-    else:
-        live_shares = FALLBACK_DILUTED_SHARES
+    live_shares = int(live_shares_info) if live_shares_info else FALLBACK_DILUTED_SHARES
 
-    # Recompute today's market_cap, btc_nav, mnav, ratio with patched values.
+    print(f"Recording observation: {today.date()} → holdings={live_holdings:,}  shares={live_shares:,}")
+    observed = upsert_observed(today, live_holdings, live_shares)
+    print(f"  observed_state.csv: {len(observed)} daily rows  ({observed.index.min().date()} → {observed.index.max().date()})")
+
+    print("Computing daily history table…")
+    daily = build_daily_history(mstr, btc, pref_hist, funding, observed=observed)
+
+    # Re-derive the dependent columns wherever holdings/shares were updated by
+    # observations (build_daily_history already does this for the full table,
+    # but the most recent yfinance price + holdings combo isn't always today's
+    # MSTR close — defensive recompute of today's row).
+    last_idx = daily.index[-1]
     daily.loc[last_idx, "market_cap"] = daily.loc[last_idx, "mstr"] * daily.loc[last_idx, "diluted_shares"]
     daily.loc[last_idx, "btc_nav"] = daily.loc[last_idx, "btc_holdings"] * daily.loc[last_idx, "btc"]
     daily.loc[last_idx, "mnav"] = daily.loc[last_idx, "market_cap"] / daily.loc[last_idx, "btc_nav"]
