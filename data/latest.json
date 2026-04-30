@@ -1,26 +1,60 @@
 {
-  "timestamp_utc": "2026-04-30T06:09:46+00:00",
+  "timestamp_utc": "2026-04-30T06:26:23+00:00",
   "mstr_price": 158.19,
-  "btc_price": 75615.17,
+  "btc_price": 75657.23,
   "btc_holdings": 818334,
   "btc_avg_cost": 70982,
   "diluted_shares": 350386842,
   "market_cap_b": 55.428,
-  "btc_nav_b": 61.878,
-  "mnav": 0.8958,
+  "btc_nav_b": 61.913,
+  "mnav": 0.8953,
   "mnav_zone": "Fire Sale",
   "mnav_color": "#10b981",
   "mnav_action": "Aggressive accumulate",
-  "mstr_btc_ratio": 0.002092,
-  "mstr_btc_ratio_z365": -0.975,
+  "ratio_dd_from_90d_peak_pct": -5.37,
+  "btc_dd_from_ath_pct": -38.8,
+  "lead_lag_divergence_flag": false,
+  "shares_30d_growth_pct": 1.39,
+  "shares_90d_growth_pct": 21.1,
+  "shares_30d_annualized_pct": 16.87,
+  "shares_90d_annualized_pct": 85.56,
+  "shares_365d_growth_pct": 28.18,
+  "shares_acceleration_flag": false,
   "realized_vol_30d_pct": 67.79,
   "realized_vol_90d_pct": 83.58,
   "implied_vol_30d_pct": 50.0,
-  "btc_ath": 124752.53,
-  "btc_drawdown_from_ath_pct": -39.39,
-  "days_since_btc_ath": 206,
-  "mstr_minus_btc_30d_pct": -8.12,
-  "mstr_minus_btc_90d_pct": 9.21,
-  "mstr_minus_btc_180d_pct": -29.5,
-  "btc_underwater_pct": -4.58
+  "gamma_squeeze_armed": false,
+  "gamma_squeeze_elevated": false,
+  "ratio_multiple_off_2y_low": 1.29,
+  "ratio_2y_low": 0.0016853903119872812,
+  "preferreds": {
+    "STRC": {
+      "price": 99.47,
+      "yield_pct": 11.56,
+      "drawdown_30d_pct": -0.55
+    },
+    "STRF": {
+      "price": 100.6,
+      "yield_pct": 9.94,
+      "drawdown_30d_pct": 0.0
+    },
+    "STRK": {
+      "price": 76.69,
+      "yield_pct": 10.43,
+      "drawdown_30d_pct": -1.83
+    },
+    "STRD": {
+      "price": 76.32,
+      "yield_pct": 13.1,
+      "drawdown_30d_pct": -2.22
+    }
+  },
+  "preferred_max_yield_pct": 13.1,
+  "preferred_worst_30d_drawdown_pct": -2.22,
+  "credit_stress_flag": true,
+  "btc_funding": {
+    "latest_pct_per_8h": -0.0012,
+    "avg_7d_pct_per_8h": -0.0026,
+    "annualized_pct": -2.81
+  }
 }
