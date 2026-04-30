@@ -3,10 +3,10 @@ MSTR Sell-High Signal Dashboard
 ================================
 Each panel below maps to one of the 8 sell-high playbook signals derived from
 the deep-research report. Quantifiable signals are computed by
-scripts/fetch_signals.py every 30 min. Non-quantifiable signals are surfaced
-as a checklist for manual tracking.
+scripts/fetch_signals.py every 30 min into data/daily_history.csv. The app
+reads only from disk — no API calls during page load.
 
-Playbook signals (source: report on MSTR cycle tops, Feb-2021 + Nov-2024):
+Playbook signals:
   P1  mNAV ≥ 2.5–3.0x = euphoria zone                              [auto]
   P2  MSTR tops BEFORE BTC — lead-lag divergence                   [auto]
   P3  Accelerated ATM equity issuance at high mNAV                 [auto]
@@ -26,7 +26,6 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from plotly.subplots import make_subplots
 
 # ─────────────────────────── config ───────────────────────────
 st.set_page_config(
@@ -40,14 +39,14 @@ ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 LATEST = DATA / "latest.json"
 HISTORY = DATA / "history.csv"
-PRICES = DATA / "price_history.csv"
+DAILY = DATA / "daily_history.csv"
 
 # ─────────────────────── styling (CSS) ────────────────────────
 st.markdown(
     """
     <style>
     .stApp { background: linear-gradient(180deg, #0b1020 0%, #0f1530 100%); }
-    .block-container { padding-top: 1.2rem; padding-bottom: 4rem; }
+    .block-container { padding-top: 1.2rem; padding-bottom: 4rem; max-width: 1500px; }
 
     .hero {
         background: linear-gradient(135deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
@@ -78,10 +77,11 @@ st.markdown(
     .metric-sub   { color: #64748b; font-size: 0.78rem; margin-top: 2px; }
 
     .section-title {
-        color: #f5f7ff; font-size: 1.15rem; font-weight: 600;
-        margin: 26px 0 10px 0; padding-bottom: 6px;
+        color: #f5f7ff; font-size: 1.20rem; font-weight: 600;
+        margin: 28px 0 14px 0; padding-bottom: 8px;
         border-bottom: 1px solid rgba(255,255,255,0.08);
     }
+    .section-title small { color:#94a3b8; font-weight:400; font-size:0.85rem; margin-left:10px; }
 
     .pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:0.72rem; font-weight:600; letter-spacing:0.04em; }
     .pill-green  { background:#10b98122; color:#34d399; border:1px solid #10b98155; }
@@ -94,22 +94,25 @@ st.markdown(
         background: rgba(255,255,255,0.025);
         border: 1px solid rgba(255,255,255,0.07);
         border-left-width: 4px;
-        border-radius: 10px;
-        padding: 14px 18px; margin-bottom: 12px;
+        border-radius: 12px;
+        padding: 16px 18px 6px 18px;
+        margin-bottom: 14px;
     }
     .signal-card .pnum { font-size:0.74rem; font-weight:700; letter-spacing:0.08em;
         color:#94a3b8; text-transform:uppercase; }
     .signal-card .name { color:#f1f5f9; font-size:1.05rem; font-weight:600; margin: 2px 0 6px 0; }
-    .signal-card .read { color:#f1f5f9; font-size:1.6rem; font-weight:700; font-variant-numeric:tabular-nums; }
+    .signal-card .read { color:#f1f5f9; font-size:1.55rem; font-weight:700; font-variant-numeric:tabular-nums; }
     .signal-card .meta { color:#94a3b8; font-size:0.83rem; margin-top:6px; }
-    .signal-card .why  { color:#cbd5e1; font-size:0.84rem; margin-top:8px; line-height:1.5; }
+    .signal-card .why  { color:#cbd5e1; font-size:0.83rem; margin-top:8px; line-height:1.5; }
 
-    .footer-note { color:#64748b; font-size:0.78rem; margin-top:30px; text-align:center; }
+    .footer-note { color:#64748b; font-size:0.78rem; margin-top:30px; text-align:center; line-height:1.6; }
+
+    /* tighten plotly chart margin in cards */
+    .stPlotlyChart { margin-top: -10px; }
     </style>
     """,
     unsafe_allow_html=True,
 )
-
 
 # ─────────────────────── data loaders ─────────────────────────
 @st.cache_data(ttl=300)
@@ -120,7 +123,7 @@ def load_latest() -> dict | None:
 
 
 @st.cache_data(ttl=300)
-def load_history() -> pd.DataFrame:
+def load_intraday() -> pd.DataFrame:
     if not HISTORY.exists():
         return pd.DataFrame()
     df = pd.read_csv(HISTORY, parse_dates=["timestamp_utc"])
@@ -128,20 +131,17 @@ def load_history() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
-def load_prices() -> pd.DataFrame:
-    if not PRICES.exists():
+def load_daily() -> pd.DataFrame:
+    if not DAILY.exists():
         return pd.DataFrame()
-    df = pd.read_csv(PRICES, parse_dates=["date"])
-    return df.sort_values("date")
+    df = pd.read_csv(DAILY, parse_dates=["date"])
+    return df.sort_values("date").set_index("date")
 
 
-# ─────────────────── signal-card helpers ──────────────────────
+# ─────────────────── plot/style helpers ──────────────────────
 COLORS = {
-    "green":  "#34d399",
-    "yellow": "#fde047",
-    "orange": "#fdba74",
-    "red":    "#fca5a5",
-    "grey":   "#94a3b8",
+    "green":  "#34d399", "yellow": "#fde047",
+    "orange": "#fdba74", "red":    "#fca5a5", "grey": "#94a3b8",
 }
 PILLS = {
     "green":  "pill-green",  "yellow": "pill-yellow",
@@ -149,9 +149,23 @@ PILLS = {
 }
 
 
-def card(p_num: str, name: str, reading: str, status_color: str, status_label: str,
-         meta: str, why: str, side_color: str | None = None) -> str:
-    border = COLORS[side_color or status_color]
+def base_layout(title: str | None = None, height: int = 230) -> dict:
+    return dict(
+        title=dict(text=title, font=dict(color="#cbd5e1", size=12)) if title else None,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#cbd5e1", size=11),
+        xaxis=dict(gridcolor="rgba(255,255,255,0.05)", showspikes=False),
+        yaxis=dict(gridcolor="rgba(255,255,255,0.05)", showspikes=False),
+        height=height,
+        margin=dict(l=10, r=10, t=24 if title else 8, b=8),
+        hovermode="x unified",
+        showlegend=False,
+    )
+
+
+def card_html(p_num: str, name: str, reading: str, status_color: str,
+              status_label: str, meta: str, why: str) -> str:
+    border = COLORS[status_color]
     return f"""
     <div class="signal-card" style="border-left-color:{border};">
       <div class="pnum">Playbook Signal {p_num}</div>
@@ -160,35 +174,235 @@ def card(p_num: str, name: str, reading: str, status_color: str, status_label: s
         &nbsp;<span class="pill {PILLS[status_color]}" style="vertical-align:middle;">{status_label}</span>
       </div>
       <div class="meta">{meta}</div>
-      <div class="why">{why}</div>
     </div>
     """
 
 
-def grade(value, ladder: list[tuple], reverse: bool = False) -> tuple[str, str]:
+def card_footer(why: str) -> str:
+    return f"""
+    <div style="background: rgba(255,255,255,0.025);
+                border: 1px solid rgba(255,255,255,0.07);
+                border-top: none;
+                border-radius: 0 0 12px 12px;
+                padding: 0 18px 14px 18px;
+                margin-top: -14px; margin-bottom: 14px;
+                color:#cbd5e1; font-size:0.83rem; line-height:1.5;">
+      {why}
+    </div>
     """
-    ladder: list of (threshold, label, color) in *ascending* threshold order.
-    For ascending values (e.g. mNAV), the LAST tier matched is the status.
-    For reverse=True (lower = worse), invert.
-    """
+
+
+def grade(value, ladder: list[tuple]) -> tuple[str, str]:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return "grey", "N/A"
-    if reverse:
-        for thr, label, color in reversed(ladder):
-            if value <= thr:
-                return color, label
-        return ladder[0][2], ladder[0][1]
-    chosen_label, chosen_color = ladder[0][1], ladder[0][2]
+    chosen_color, chosen_label = ladder[0][2], ladder[0][1]
     for thr, label, color in ladder:
         if value >= thr:
             chosen_label, chosen_color = label, color
     return chosen_color, chosen_label
 
 
+# ─────────────────── per-signal chart builders ───────────────
+def chart_p1_mnav(daily: pd.DataFrame) -> go.Figure:
+    s = daily["mnav"].dropna()
+    fig = go.Figure()
+    # zone bands
+    bands = [(0, 1.0, "#10b981"), (1.0, 1.5, "#22c55e"), (1.5, 2.0, "#facc15"),
+             (2.0, 2.5, "#fb923c"), (2.5, 4.5, "#ef4444")]
+    for y0, y1, c in bands:
+        fig.add_hrect(y0=y0, y1=y1, fillcolor=c, opacity=0.07, line_width=0, layer="below")
+    fig.add_hline(y=2.5, line_dash="dot", line_color="#ef4444", opacity=0.5,
+                  annotation_text="Sell", annotation_position="top right",
+                  annotation=dict(font=dict(color="#fca5a5", size=10)))
+    fig.add_hline(y=2.0, line_dash="dot", line_color="#fb923c", opacity=0.5,
+                  annotation_text="Trim", annotation_position="top right",
+                  annotation=dict(font=dict(color="#fdba74", size=10)))
+    fig.add_trace(go.Scatter(x=s.index, y=s.values, mode="lines",
+                             line=dict(color="#a5b4fc", width=2), name="mNAV",
+                             hovertemplate="%{x|%Y-%m-%d}: %{y:.2f}x<extra></extra>"))
+    fig.update_layout(**base_layout())
+    fig.update_yaxes(title=None, ticksuffix="x")
+    return fig
+
+
+def chart_p2_lead_lag(daily: pd.DataFrame) -> go.Figure:
+    df = daily[["ratio_dd_from_90d_peak_pct", "btc_dd_from_ath_pct"]].dropna(how="all")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["ratio_dd_from_90d_peak_pct"], mode="lines",
+        line=dict(color="#a5b4fc", width=2), name="MSTR/BTC ratio off 90d peak",
+        hovertemplate="%{x|%Y-%m-%d}: ratio dd %{y:+.1f}%<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["btc_dd_from_ath_pct"], mode="lines",
+        line=dict(color="#fbbf24", width=1.6, dash="dot"), name="BTC off ATH",
+        hovertemplate="%{x|%Y-%m-%d}: BTC dd %{y:+.1f}%<extra></extra>",
+    ))
+    # divergence shading: ratio_dd <= -10 AND btc_dd >= -5
+    div = (df["ratio_dd_from_90d_peak_pct"] <= -10) & (df["btc_dd_from_ath_pct"] >= -5)
+    if div.any():
+        # Shade individual divergence regions
+        for grp in _runs(div):
+            fig.add_vrect(x0=grp[0], x1=grp[1], fillcolor="#ef4444",
+                          opacity=0.15, line_width=0, layer="below")
+    fig.add_hline(y=0, line_color="rgba(255,255,255,0.15)", line_width=1)
+    fig.update_layout(**base_layout(), legend=dict(orientation="h", yanchor="bottom",
+                                                    y=1.02, xanchor="right", x=1,
+                                                    font=dict(size=10)))
+    fig.update_layout(showlegend=True)
+    fig.update_yaxes(title=None, ticksuffix="%")
+    return fig
+
+
+def chart_p3_atm(daily: pd.DataFrame) -> go.Figure:
+    df = daily[["shares_30d_annualized_pct", "shares_90d_annualized_pct"]].dropna(how="all")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["shares_90d_annualized_pct"], mode="lines",
+        line=dict(color="#64748b", width=1.4, dash="dot"), name="90d ann",
+        hovertemplate="%{x|%Y-%m-%d}: 90d ann %{y:+.1f}%<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["shares_30d_annualized_pct"], mode="lines",
+        line=dict(color="#a5b4fc", width=2), name="30d ann",
+        hovertemplate="%{x|%Y-%m-%d}: 30d ann %{y:+.1f}%<extra></extra>",
+    ))
+    # shade where acceleration flag fired
+    accel = daily["shares_acceleration"].fillna(False).astype(bool)
+    for grp in _runs(accel):
+        fig.add_vrect(x0=grp[0], x1=grp[1], fillcolor="#fb923c",
+                      opacity=0.12, line_width=0, layer="below")
+    fig.add_hline(y=0, line_color="rgba(255,255,255,0.15)", line_width=1)
+    fig.update_layout(**base_layout(), legend=dict(orientation="h", yanchor="bottom",
+                                                    y=1.02, xanchor="right", x=1,
+                                                    font=dict(size=10)))
+    fig.update_layout(showlegend=True)
+    fig.update_yaxes(title=None, ticksuffix="%")
+    return fig
+
+
+def chart_p5_gamma(daily: pd.DataFrame) -> go.Figure:
+    df = daily[["realized_vol_30d_pct", "mnav"]].dropna(how="all")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["realized_vol_30d_pct"], mode="lines",
+        line=dict(color="#f472b6", width=2), name="RV 30d",
+        hovertemplate="%{x|%Y-%m-%d}: RV %{y:.0f}%<extra></extra>",
+        yaxis="y1",
+    ))
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["mnav"], mode="lines",
+        line=dict(color="#fbbf24", width=1.6), name="mNAV",
+        hovertemplate="%{x|%Y-%m-%d}: mNAV %{y:.2f}x<extra></extra>",
+        yaxis="y2",
+    ))
+    # Shade ARMED regions
+    armed = daily["gamma_armed"].fillna(False).astype(bool)
+    for grp in _runs(armed):
+        fig.add_vrect(x0=grp[0], x1=grp[1], fillcolor="#ef4444",
+                      opacity=0.18, line_width=0, layer="below")
+    fig.add_hline(y=100, line_dash="dot", line_color="#ef4444", opacity=0.5, yref="y1")
+    layout = base_layout()
+    layout["yaxis"] = dict(title=None, ticksuffix="%", gridcolor="rgba(255,255,255,0.05)")
+    layout["yaxis2"] = dict(title=None, ticksuffix="x", overlaying="y", side="right",
+                             showgrid=False)
+    layout["legend"] = dict(orientation="h", yanchor="bottom", y=1.02,
+                             xanchor="right", x=1, font=dict(size=10))
+    layout["showlegend"] = True
+    fig.update_layout(**layout)
+    return fig
+
+
+def chart_p6_off_cycle(daily: pd.DataFrame) -> go.Figure:
+    s = daily["ratio_multiple_off_2y_low"].dropna()
+    fig = go.Figure()
+    fig.add_hrect(y0=0, y1=1.5, fillcolor="#10b981", opacity=0.06, line_width=0, layer="below")
+    fig.add_hrect(y0=1.5, y1=2.5, fillcolor="#facc15", opacity=0.06, line_width=0, layer="below")
+    fig.add_hrect(y0=2.5, y1=3.5, fillcolor="#fb923c", opacity=0.08, line_width=0, layer="below")
+    fig.add_hrect(y0=3.5, y1=10, fillcolor="#ef4444", opacity=0.10, line_width=0, layer="below")
+    fig.add_hline(y=2.5, line_dash="dot", line_color="#fb923c", opacity=0.5,
+                  annotation_text="Late cycle", annotation_position="top right",
+                  annotation=dict(font=dict(color="#fdba74", size=10)))
+    fig.add_hline(y=3.5, line_dash="dot", line_color="#ef4444", opacity=0.5,
+                  annotation_text="Extreme", annotation_position="top right",
+                  annotation=dict(font=dict(color="#fca5a5", size=10)))
+    fig.add_trace(go.Scatter(x=s.index, y=s.values, mode="lines",
+                             line=dict(color="#fbbf24", width=2), name="multiple off 2y low",
+                             hovertemplate="%{x|%Y-%m-%d}: %{y:.2f}x<extra></extra>"))
+    fig.update_layout(**base_layout())
+    fig.update_yaxes(title=None, ticksuffix="x")
+    return fig
+
+
+def chart_p7_credit(daily: pd.DataFrame) -> go.Figure:
+    s = daily["preferred_max_yield_pct"].dropna()
+    fig = go.Figure()
+    if not s.empty:
+        fig.add_hrect(y0=0, y1=10, fillcolor="#10b981", opacity=0.06, line_width=0, layer="below")
+        fig.add_hrect(y0=10, y1=12, fillcolor="#facc15", opacity=0.06, line_width=0, layer="below")
+        fig.add_hrect(y0=12, y1=30, fillcolor="#ef4444", opacity=0.08, line_width=0, layer="below")
+        fig.add_hline(y=12, line_dash="dot", line_color="#ef4444", opacity=0.5,
+                      annotation_text="Stress", annotation_position="top right",
+                      annotation=dict(font=dict(color="#fca5a5", size=10)))
+        fig.add_trace(go.Scatter(x=s.index, y=s.values, mode="lines",
+                                 line=dict(color="#fb923c", width=2),
+                                 hovertemplate="%{x|%Y-%m-%d}: max yield %{y:.2f}%<extra></extra>"))
+    else:
+        fig.add_annotation(text="Preferreds listed Q3 2024+", xref="paper", yref="paper",
+                           x=0.5, y=0.5, showarrow=False, font=dict(color="#94a3b8"))
+    fig.update_layout(**base_layout())
+    fig.update_yaxes(title=None, ticksuffix="%")
+    return fig
+
+
+def chart_p8_funding(daily: pd.DataFrame) -> go.Figure:
+    s = daily["btc_funding_annualized_pct"].dropna()
+    fig = go.Figure()
+    if not s.empty:
+        fig.add_hrect(y0=-50, y1=5, fillcolor="#10b981", opacity=0.06, line_width=0, layer="below")
+        fig.add_hrect(y0=5, y1=15, fillcolor="#facc15", opacity=0.06, line_width=0, layer="below")
+        fig.add_hrect(y0=15, y1=30, fillcolor="#fb923c", opacity=0.06, line_width=0, layer="below")
+        fig.add_hrect(y0=30, y1=200, fillcolor="#ef4444", opacity=0.08, line_width=0, layer="below")
+        fig.add_hline(y=30, line_dash="dot", line_color="#ef4444", opacity=0.5,
+                      annotation_text="Hot", annotation_position="top right",
+                      annotation=dict(font=dict(color="#fca5a5", size=10)))
+        fig.add_hline(y=0, line_color="rgba(255,255,255,0.15)", line_width=1)
+        fig.add_trace(go.Scatter(x=s.index, y=s.values, mode="lines",
+                                 line=dict(color="#34d399", width=2),
+                                 hovertemplate="%{x|%Y-%m-%d}: %{y:+.1f}%/yr<extra></extra>"))
+    else:
+        fig.add_annotation(text="Funding history loading…", xref="paper", yref="paper",
+                           x=0.5, y=0.5, showarrow=False, font=dict(color="#94a3b8"))
+    fig.update_layout(**base_layout())
+    fig.update_yaxes(title=None, ticksuffix="%")
+    return fig
+
+
+def _runs(mask: pd.Series) -> list[tuple]:
+    """Return list of (start, end) timestamps where mask is True (contiguous runs)."""
+    if mask.empty:
+        return []
+    out = []
+    in_run = False
+    start = None
+    prev_idx = None
+    for ts, v in mask.items():
+        if v and not in_run:
+            start = ts
+            in_run = True
+        elif not v and in_run:
+            out.append((start, prev_idx))
+            in_run = False
+        prev_idx = ts
+    if in_run:
+        out.append((start, prev_idx))
+    return out
+
+
 # ─────────────────────────── render ───────────────────────────
 latest = load_latest()
-hist = load_history()
-prices = load_prices()
+intraday = load_intraday()
+daily = load_daily()
 
 if not latest:
     st.error("No data yet. Run `python scripts/fetch_signals.py` once to seed.")
@@ -196,6 +410,10 @@ if not latest:
 
 ts = datetime.fromisoformat(latest["timestamp_utc"].replace("Z", "+00:00"))
 age_min = int((datetime.now(timezone.utc) - ts).total_seconds() / 60)
+daily_span = (
+    f"{daily.index.min().date()} → {daily.index.max().date()}"
+    if not daily.empty else "no data"
+)
 
 st.markdown(
     f"""
@@ -203,15 +421,16 @@ st.markdown(
       <h1>📈 MSTR Sell-High Signal Dashboard</h1>
       <div class="sub">
         Eight playbook signals from the deep-research report on MSTR cycle tops (Feb-2021 + Nov-2024).
-        &nbsp;·&nbsp; Refreshed every 30 min via GitHub Actions.
-        &nbsp;·&nbsp; Last update: <b>{ts.strftime('%Y-%m-%d %H:%M UTC')}</b> ({age_min} min ago)
+        &nbsp;·&nbsp; Refreshed every 30 min via GitHub Actions.<br>
+        Last update: <b>{ts.strftime('%Y-%m-%d %H:%M UTC')}</b> ({age_min} min ago)
+        &nbsp;·&nbsp; Daily history: <b>{daily_span}</b> ({len(daily):,} rows)
       </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-# ── mNAV hero + base metrics ────────────────────────────────
+# ── mNAV hero + key metrics ─────────────────────────────────
 left, right = st.columns([1, 2], gap="large")
 
 with left:
@@ -219,7 +438,7 @@ with left:
     st.markdown(
         f"""
         <div class="mnav-card" style="border-color:{color}66; box-shadow:0 0 60px {color}22;">
-          <div class="metric-label">P1 · Current mNAV (market cap ÷ BTC NAV)</div>
+          <div class="metric-label">P1 · Current mNAV</div>
           <div class="mnav-value" style="color:{color};">{latest['mnav']:.2f}x</div>
           <div class="mnav-zone" style="color:{color};">{latest['mnav_zone']}</div>
           <div class="mnav-action">{latest['mnav_action']}</div>
@@ -240,13 +459,13 @@ with left:
 with right:
     cols = st.columns(3)
     metric_specs = [
-        ("MSTR Price",      f"${latest['mstr_price']:,.2f}",      f"Diluted shares: {latest['diluted_shares']:,}"),
-        ("BTC Spot",        f"${latest['btc_price']:,.0f}",       f"Avg cost ${latest['btc_avg_cost']:,.0f} · holdings {latest['btc_holdings']:,}"),
-        ("Market Cap",      f"${latest['market_cap_b']:.2f} B",   f"BTC NAV ${latest['btc_nav_b']:.2f} B"),
+        ("MSTR Price",      f"${latest['mstr_price']:,.2f}",       f"Diluted shares: {latest['diluted_shares']:,}"),
+        ("BTC Spot",        f"${latest['btc_price']:,.0f}",        f"Avg cost ${latest['btc_avg_cost']:,.0f} · {latest['btc_holdings']:,} BTC"),
+        ("Market Cap",      f"${latest['market_cap_b']:.2f} B",    f"BTC NAV ${latest['btc_nav_b']:.2f} B"),
         ("Implied Vol 30d", (f"{latest['implied_vol_30d_pct']:.0f}%" if latest.get('implied_vol_30d_pct') else "n/a"), "ATM call IV"),
         ("Realized Vol 30d", f"{latest['realized_vol_30d_pct']:.0f}%", f"90d: {latest['realized_vol_90d_pct']:.0f}%"),
         ("BTC Funding (ann.)", (f"{latest['btc_funding']['annualized_pct']:+.1f}%" if latest['btc_funding'].get('annualized_pct') is not None else "n/a"),
-                              f"7d avg per 8h: {latest['btc_funding'].get('avg_7d_pct_per_8h', 'n/a')}%"),
+                              f"7d avg per 8h: {latest['btc_funding'].get('latest_pct_per_8h', 'n/a')}%"),
     ]
     for i, (label, value, sub) in enumerate(metric_specs):
         with cols[i % 3]:
@@ -261,12 +480,16 @@ with right:
                 unsafe_allow_html=True,
             )
 
-# ── PLAYBOOK SIGNAL BOARD ────────────────────────────────────
-st.markdown('<div class="section-title">🚦 Quantifiable Playbook Signals</div>', unsafe_allow_html=True)
+# ── PLAYBOOK SIGNAL PANELS (card + chart per signal) ────────
+st.markdown(
+    '<div class="section-title">🚦 Quantifiable Playbook Signals '
+    '<small>· 10y trends with threshold zones</small></div>',
+    unsafe_allow_html=True,
+)
 
-# P1 — mNAV (already shown as hero card, but include compact version in board for completeness)
+# Compute per-signal status from latest snapshot
 mnav = latest["mnav"]
-p1_status_color, p1_status_label = grade(mnav, [
+p1_color, p1_label = grade(mnav, [
     (0,    "FIRE SALE",  "green"),
     (1.5,  "ACCUMULATE", "green"),
     (2.0,  "FAIR",       "yellow"),
@@ -274,11 +497,9 @@ p1_status_color, p1_status_label = grade(mnav, [
     (3.0,  "SELL",       "red"),
 ])
 
-# P2 — Lead-lag divergence
 ratio_dd = latest["ratio_dd_from_90d_peak_pct"]
 btc_dd = latest["btc_dd_from_ath_pct"]
-p2_diverging = latest["lead_lag_divergence_flag"]
-if p2_diverging:
+if latest["lead_lag_divergence_flag"]:
     p2_color, p2_label = "red", "DIVERGING"
 elif ratio_dd > -3 and btc_dd > -5:
     p2_color, p2_label = "orange", "BOTH HOT"
@@ -287,12 +508,11 @@ elif btc_dd > -10:
 else:
     p2_color, p2_label = "green", "DORMANT"
 
-# P3 — ATM issuance pace
 g30_ann = latest["shares_30d_annualized_pct"]
 g90_ann = latest["shares_90d_annualized_pct"]
 accel_flag = latest["shares_acceleration_flag"]
 if accel_flag and (g30_ann or 0) > 30 and mnav > 2.0:
-    p3_color, p3_label = "red", "ACCELERATING + HOT"
+    p3_color, p3_label = "red", "ACCEL + HOT"
 elif accel_flag:
     p3_color, p3_label = "orange", "ACCELERATING"
 elif g30_ann is None:
@@ -302,7 +522,6 @@ elif g30_ann > 25:
 else:
     p3_color, p3_label = "green", "NORMAL"
 
-# P5 — Gamma-squeeze blow-off
 rv30 = latest["realized_vol_30d_pct"]
 if latest["gamma_squeeze_armed"]:
     p5_color, p5_label = "red", "ARMED"
@@ -313,7 +532,6 @@ elif rv30 > 60:
 else:
     p5_color, p5_label = "green", "QUIET"
 
-# P6 — Multiple off cycle low
 mult = latest["ratio_multiple_off_2y_low"]
 p6_color, p6_label = grade(mult, [
     (0,   "EARLY CYCLE", "green"),
@@ -322,7 +540,6 @@ p6_color, p6_label = grade(mult, [
     (3.5, "EXTREME",     "red"),
 ])
 
-# P7 — Credit stress
 max_yld = latest["preferred_max_yield_pct"]
 worst_dd = latest["preferred_worst_30d_drawdown_pct"]
 if latest["credit_stress_flag"]:
@@ -334,90 +551,120 @@ elif max_yld is None:
 else:
     p7_color, p7_label = "green", "HEALTHY"
 
-# P8 — BTC perp funding
 fund_ann = latest["btc_funding"].get("annualized_pct")
 p8_color, p8_label = grade(fund_ann, [
-    (-1e9, "NEGATIVE",   "green"),
-    (5,    "NORMAL",     "green"),
-    (15,   "ELEVATED",   "yellow"),
-    (30,   "HOT",        "orange"),
-    (60,   "EUPHORIC",   "red"),
+    (-1e9, "NEGATIVE",  "green"),
+    (5,    "NORMAL",    "green"),
+    (15,   "ELEVATED",  "yellow"),
+    (30,   "HOT",       "orange"),
+    (60,   "EUPHORIC",  "red"),
 ])
 
-# Render P1 → P8 cards in a 2-column grid
-cards_html = []
+WHY = {
+    "P1": "Both prior tops printed here — Feb 2021 ≈ 2.7x, Nov 2024 ≈ 3.1x. Premium is the first thing to evaporate.",
+    "P2": "In 2021 MSTR topped 9 months before BTC. Divergence (ratio rolling over while BTC pinned to ATH) is the cleanest in-real-time tell.",
+    "P3": "Accelerating ATM dilution at high mNAV = Saylor confirming the premium is rich. Verify via SEC 8-K filings.",
+    "P5": "Blow-off vol with rich premium = options-driven top — the classic Nov-2024 setup. When IV crushes after this fires, gamma reverses violently.",
+    "P6": "Crowding indicator. Ratio at 3–5x off cycle low = leverage trade is full; mean-reverts hard.",
+    "P7": "MSTR's capital structure depends on rolling cheap converts/preferreds. Widening spreads = funding stress before forced selling.",
+    "P8": "Persistently positive funding = leveraged longs paying through the nose. Sustained > 0.10%/8h (~110%/yr) historically marks BTC tops within weeks.",
+}
 
-cards_html.append(card(
-    "#1", "mNAV — premium to BTC NAV",
-    f"{mnav:.2f}x",
-    p1_status_color, p1_status_label,
-    f"Trim ≥ 2.0x &nbsp;·&nbsp; Sell ≥ 2.5x &nbsp;·&nbsp; Max sell ≥ 3.0x",
-    "Both prior tops printed here — Feb 2021 ≈ 2.7x, Nov 2024 ≈ 3.1x. Premium is the first thing to evaporate."
-))
 
-cards_html.append(card(
-    "#2", "MSTR tops BEFORE BTC — lead-lag divergence",
-    f"{ratio_dd:+.1f}% / {btc_dd:+.1f}%",
-    p2_color, p2_label,
-    f"MSTR/BTC ratio off its 90d peak: <b>{ratio_dd:+.2f}%</b> &nbsp;·&nbsp; BTC off ATH: <b>{btc_dd:+.2f}%</b><br>"
-    f"Trigger: ratio ≤ −10% from 90d peak <i>while</i> BTC ≥ −5% from ATH",
-    "In 2021 MSTR topped 9 months before BTC. Divergence (ratio rolling over while BTC pinned to ATH) is the cleanest in-real-time tell."
-))
+def render_signal(p_num: str, name: str, reading: str, status_color: str,
+                  status_label: str, meta: str, chart_fn, why_key: str):
+    st.markdown(
+        card_html(p_num, name, reading, status_color, status_label, meta, WHY[why_key]),
+        unsafe_allow_html=True,
+    )
+    fig = chart_fn(daily)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.markdown(card_footer(WHY[why_key]), unsafe_allow_html=True)
 
-cards_html.append(card(
-    "#3", "Accelerated ATM equity issuance",
-    (f"{g30_ann:+.0f}% (30d ann.)" if g30_ann is not None else "—"),
-    p3_color, p3_label,
-    f"30d annualized share growth: <b>{g30_ann if g30_ann is not None else 'n/a'}%</b><br>"
-    f"90d annualized: <b>{g90_ann if g90_ann is not None else 'n/a'}%</b> &nbsp;·&nbsp; "
-    f"Acceleration trigger: 30d &gt; 90d × 1.2",
-    "Accelerating ATM dilution at high mNAV = Saylor confirming the premium is rich. "
-    "Verify in SEC 8-K filings (item 8.01); this signal is a proxy."
-))
 
-cards_html.append(card(
-    "#5", "Gamma-squeeze blow-off (compound)",
-    f"RV30 {rv30:.0f}%  ·  mNAV {mnav:.2f}x",
-    p5_color, p5_label,
-    f"<b>ARMED</b> when RV30 &gt; 100% AND mNAV &gt; 2.5x  &nbsp;·&nbsp; "
-    f"<b>ELEVATED</b> when RV30 &gt; 80% AND mNAV &gt; 2.0x",
-    "Blow-off vol with rich premium = options-driven top, classic Nov-2024 setup. "
-    "When IV crushes after this fires, the same gamma reverses violently."
-))
+col1, col2 = st.columns(2, gap="medium")
 
-cards_html.append(card(
-    "#6", "MSTR/BTC ratio — multiple off cycle low",
-    f"{mult:.2f}x",
-    p6_color, p6_label,
-    f"Trailing-2y ratio low: <b>{latest['ratio_2y_low']:.6f}</b><br>"
-    f"Late cycle ≥ 2.5x &nbsp;·&nbsp; Extreme ≥ 3.5x (matches 3–5x off cycle low rule from playbook)",
-    "Crowding indicator. When MSTR has outperformed BTC 3–5x off the cycle low, the leverage trade is full — historically mean-reverts hard."
-))
+with col1:
+    render_signal(
+        "#1", "mNAV — premium to BTC NAV",
+        f"{mnav:.2f}x", p1_color, p1_label,
+        "Trim ≥ 2.0x &nbsp;·&nbsp; Sell ≥ 2.5x &nbsp;·&nbsp; Max sell ≥ 3.0x",
+        chart_p1_mnav, "P1",
+    )
+    render_signal(
+        "#3", "Accelerated ATM equity issuance",
+        (f"{g30_ann:+.0f}% (30d ann.)" if g30_ann is not None else "—"),
+        p3_color, p3_label,
+        f"30d ann. share growth: <b>{g30_ann if g30_ann is not None else 'n/a'}%</b> · "
+        f"90d ann.: <b>{g90_ann if g90_ann is not None else 'n/a'}%</b> · "
+        f"Acceleration: 30d &gt; 90d × 1.2",
+        chart_p3_atm, "P3",
+    )
+    render_signal(
+        "#6", "MSTR/BTC ratio — multiple off cycle low",
+        f"{mult:.2f}x", p6_color, p6_label,
+        f"Trailing-2y ratio low: <b>{latest['ratio_2y_low']:.6f}</b> · "
+        "Late cycle ≥ 2.5x · Extreme ≥ 3.5x",
+        chart_p6_off_cycle, "P6",
+    )
+    render_signal(
+        "#8", "BTC perp funding — leverage saturation",
+        (f"{fund_ann:+.1f}% (ann.)" if fund_ann is not None else "n/a"),
+        p8_color, p8_label,
+        f"Latest 8h: <b>{latest['btc_funding'].get('latest_pct_per_8h', 'n/a')}%</b> · "
+        "Hot ≥ 30%/yr · Euphoric ≥ 60%/yr · Source: OKX BTC-USDT-SWAP",
+        chart_p8_funding, "P8",
+    )
 
-cards_html.append(card(
-    "#7", "STRC/STRF/STRK/STRD credit-spread stress",
-    (f"max yield {max_yld:.1f}%" if max_yld is not None else "n/a"),
-    p7_color, p7_label,
-    f"Worst preferred 30d drawdown: <b>{worst_dd if worst_dd is not None else 'n/a'}%</b><br>"
-    f"Stress trigger: max yield &gt; 12% or any preferred −8% in 30d",
-    "MSTR's capital structure depends on rolling cheap converts/preferreds. Widening spreads = funding stress before forced selling — "
-    "Dec-2025 STRD scrutiny was an early warning."
-))
+with col2:
+    render_signal(
+        "#2", "MSTR tops BEFORE BTC — lead-lag divergence",
+        f"{ratio_dd:+.1f}% / {btc_dd:+.1f}%",
+        p2_color, p2_label,
+        f"Ratio off 90d peak: <b>{ratio_dd:+.2f}%</b> · BTC off ATH: <b>{btc_dd:+.2f}%</b><br>"
+        "Trigger: ratio ≤ −10% AND BTC ≥ −5%",
+        chart_p2_lead_lag, "P2",
+    )
+    render_signal(
+        "#5", "Gamma-squeeze blow-off (compound)",
+        f"RV30 {rv30:.0f}% · mNAV {mnav:.2f}x",
+        p5_color, p5_label,
+        "<b>ARMED</b>: RV30 &gt; 100% AND mNAV &gt; 2.5x · "
+        "<b>ELEVATED</b>: RV30 &gt; 80% AND mNAV &gt; 2.0x",
+        chart_p5_gamma, "P5",
+    )
+    render_signal(
+        "#7", "STRC/STRF/STRK/STRD credit-spread stress",
+        (f"max yield {max_yld:.1f}%" if max_yld is not None else "n/a"),
+        p7_color, p7_label,
+        f"Worst preferred 30d drawdown: <b>{worst_dd if worst_dd is not None else 'n/a'}%</b> · "
+        "Stress: max yield &gt; 12% or 30d DD &lt; −8%",
+        chart_p7_credit, "P7",
+    )
 
-cards_html.append(card(
-    "#8", "BTC perp funding — leverage saturation",
-    (f"{fund_ann:+.1f}% (ann.)" if fund_ann is not None else "n/a"),
-    p8_color, p8_label,
-    f"Latest 8h: <b>{latest['btc_funding'].get('latest_pct_per_8h', 'n/a')}%</b> &nbsp;·&nbsp; "
-    f"7d avg 8h: <b>{latest['btc_funding'].get('avg_7d_pct_per_8h', 'n/a')}%</b><br>"
-    f"Hot ≥ 30%/yr &nbsp;·&nbsp; Euphoric ≥ 60%/yr &nbsp;·&nbsp; OKX BTC-USDT perp",
-    "Persistently positive funding = leveraged longs paying through the nose. "
-    "Sustained &gt;0.10%/8h (≈110%/yr) historically marks BTC tops within weeks."
-))
-
-c1, c2 = st.columns(2, gap="medium")
-for i, html in enumerate(cards_html):
-    (c1 if i % 2 == 0 else c2).markdown(html, unsafe_allow_html=True)
+    # P4 panel — qualitative-only, no chart
+    st.markdown(
+        f"""
+        <div class="signal-card" style="border-left-color:#94a3b8;">
+          <div class="pnum">Playbook Signal #4</div>
+          <div class="name">Catalyst calendar exhausted &nbsp;<span class="pill pill-grey">MANUAL</span></div>
+          <div class="meta" style="margin-top:10px;">
+            The KEY non-quantifiable playbook signal. Track in the manual checklist below.
+            Are major catalysts (ETF launches, options launches, index inclusion, splits, big announcements)
+            all behind us with nothing big in the queue? In Nov-2024, the queue emptied right at the top.
+          </div>
+        </div>
+        <div style="background: rgba(255,255,255,0.025);
+                    border: 1px solid rgba(255,255,255,0.07);
+                    border-top: none;
+                    border-radius: 0 0 12px 12px;
+                    padding: 0 18px 14px 18px; margin-top: -14px; margin-bottom: 14px;
+                    color:#cbd5e1; font-size:0.83rem; line-height:1.5;">
+          See ✅ checklist at bottom of page.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # ── Per-preferred breakdown ─────────────────────────────────
 prefs = latest.get("preferreds") or {}
@@ -434,116 +681,57 @@ if prefs:
                 <div class="metric-card">
                   <div class="metric-label">{sym}</div>
                   <div class="metric-value">{yld_str}</div>
-                  <div class="metric-sub">Price {px_str} &nbsp;·&nbsp; 30d DD {dd_str}</div>
+                  <div class="metric-sub">Price {px_str} · 30d DD {dd_str}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-# ── Charts ───────────────────────────────────────────────────
-st.markdown('<div class="section-title">📊 History</div>', unsafe_allow_html=True)
+# ── Spot price reference ────────────────────────────────────
+if not daily.empty:
+    st.markdown('<div class="section-title">📈 MSTR vs BTC — spot reference</div>', unsafe_allow_html=True)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=daily.index, y=daily["mstr"], mode="lines",
+                              line=dict(color="#a5b4fc", width=2), name="MSTR ($)",
+                              hovertemplate="%{x|%Y-%m-%d}: $%{y:,.2f}<extra></extra>",
+                              yaxis="y1"))
+    fig.add_trace(go.Scatter(x=daily.index, y=daily["btc"], mode="lines",
+                              line=dict(color="#fbbf24", width=2), name="BTC ($)",
+                              hovertemplate="%{x|%Y-%m-%d}: $%{y:,.0f}<extra></extra>",
+                              yaxis="y2"))
+    layout = base_layout(height=320)
+    layout["yaxis"] = dict(title="MSTR ($)", gridcolor="rgba(255,255,255,0.05)")
+    layout["yaxis2"] = dict(title="BTC ($)", overlaying="y", side="right", showgrid=False)
+    layout["legend"] = dict(orientation="h", yanchor="bottom", y=1.02,
+                             xanchor="right", x=1, font=dict(size=10))
+    layout["showlegend"] = True
+    fig.update_layout(**layout)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-if not hist.empty and len(hist) > 1:
-    c1, c2 = st.columns(2, gap="large")
-
-    with c1:
-        fig = go.Figure()
-        fig.add_hrect(y0=0, y1=1.0, fillcolor="#10b981", opacity=0.10, line_width=0)
-        fig.add_hrect(y0=1.0, y1=1.5, fillcolor="#22c55e", opacity=0.08, line_width=0)
-        fig.add_hrect(y0=1.5, y1=2.0, fillcolor="#facc15", opacity=0.08, line_width=0)
-        fig.add_hrect(y0=2.0, y1=2.5, fillcolor="#fb923c", opacity=0.10, line_width=0)
-        fig.add_hrect(y0=2.5, y1=4.0, fillcolor="#ef4444", opacity=0.12, line_width=0)
-        fig.add_trace(go.Scatter(
-            x=hist["timestamp_utc"], y=hist["mnav"],
-            mode="lines", line=dict(color="#a5b4fc", width=2.2),
-            name="mNAV",
-        ))
-        fig.update_layout(
-            title="P1 · mNAV over time", title_font_color="#f1f5f9",
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#cbd5e1"),
-            xaxis=dict(gridcolor="rgba(255,255,255,0.06)"),
-            yaxis=dict(gridcolor="rgba(255,255,255,0.06)", title="mNAV"),
-            height=320, margin=dict(l=10, r=10, t=40, b=10),
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    with c2:
-        fig = make_subplots(specs=[[{"secondary_y": True}]])
-        fig.add_trace(go.Scatter(
-            x=hist["timestamp_utc"], y=hist["ratio_multiple_off_2y_low"],
-            mode="lines", line=dict(color="#fbbf24", width=2.2),
-            name="P6 ratio multiple",
-        ), secondary_y=False)
-        fig.add_trace(go.Scatter(
-            x=hist["timestamp_utc"], y=hist["realized_vol_30d_pct"],
-            mode="lines", line=dict(color="#f472b6", width=1.6, dash="dot"),
-            name="P5 RV30",
-        ), secondary_y=True)
-        fig.update_layout(
-            title="P6 ratio multiple + P5 vol", title_font_color="#f1f5f9",
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#cbd5e1"),
-            xaxis=dict(gridcolor="rgba(255,255,255,0.06)"),
-            yaxis=dict(gridcolor="rgba(255,255,255,0.06)", title="Ratio multiple"),
-            yaxis2=dict(title="RV30 %", showgrid=False),
-            height=320, margin=dict(l=10, r=10, t=40, b=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        )
-        st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("Snapshot history will appear after a few scheduled runs (every 30 min via GitHub Actions).")
-
-if not prices.empty:
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(go.Scatter(
-        x=prices["date"], y=prices["mstr"], mode="lines",
-        line=dict(color="#a5b4fc", width=2), name="MSTR",
-    ), secondary_y=False)
-    fig.add_trace(go.Scatter(
-        x=prices["date"], y=prices["btc"], mode="lines",
-        line=dict(color="#fbbf24", width=2), name="BTC",
-    ), secondary_y=True)
-    fig.update_layout(
-        title="MSTR vs BTC — daily close (2y)", title_font_color="#f1f5f9",
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#cbd5e1"),
-        xaxis=dict(gridcolor="rgba(255,255,255,0.06)"),
-        yaxis=dict(gridcolor="rgba(255,255,255,0.06)", title="MSTR ($)"),
-        yaxis2=dict(title="BTC ($)", showgrid=False),
-        height=360, margin=dict(l=10, r=10, t=40, b=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-# ── P4 + qualitative manual checklist ────────────────────────
-st.markdown('<div class="section-title">📝 P4 + Qualitative Signals (track manually)</div>', unsafe_allow_html=True)
-
+# ── P4 + qualitative manual checklist ───────────────────────
 st.markdown(
-    "<div style='color:#94a3b8; font-size:0.86rem; margin-bottom:12px;'>"
-    "These signals are either inherently subjective or require sources without reliable APIs. "
-    "Tick them off as confirmation alongside the quantifiable signals above."
-    "</div>",
+    '<div class="section-title">📝 P4 + Qualitative Signals '
+    '<small>· not API-able; track manually</small></div>',
     unsafe_allow_html=True,
 )
 
 manual = [
     ("P4 · Catalyst calendar exhausted",
-     "The KEY MANUAL signal from the playbook. Are the major structural catalysts (ETF launch, options launch, index inclusion, major split, large announcement) all *behind* us with nothing big left in the queue? In Nov-2024, after IBIT options + Nasdaq-100 inclusion talks, the queue was empty and the market topped within weeks."),
+     "The KEY MANUAL signal from the playbook. Are the major structural catalysts (ETF launches, options launches, index inclusion, splits, big announcements) all behind us with nothing big in the queue? In Nov-2024 after IBIT options + Nasdaq-100 inclusion talks, the queue emptied and the market topped within weeks."),
     ("Saylor media tour intensity",
-     "Is Saylor on every podcast / CNBC / X-spaces in a single week? Peak media presence historically clusters within ~30 days of the cycle top."),
+     "Is Saylor on every podcast / CNBC / X-spaces in a single week? Peak media presence clusters within ~30 days of the cycle top."),
     ("Retail mania / social sentiment",
-     "Are MSTR memes on r/wallstreetbets, FinTwit, TikTok daily? Are random people asking you about MSTR? Confirms crowding."),
+     "MSTR memes on r/wallstreetbets, FinTwit, TikTok daily? Random people asking you about MSTR? Confirms crowding."),
     ("Index inclusion narrative peaking",
-     "S&P 500 / Nasdaq-100 inclusion stories tend to peak right at the top — the news IS the catalyst, post-inclusion is usually a fade."),
+     "S&P 500 / Nasdaq-100 inclusion stories peak right at the top — the news IS the catalyst, post-inclusion is usually a fade."),
     ("Macro liquidity turning hawkish",
      "Fed pivot to hawkish, DXY ripping, real yields rising — risk-asset top conditions."),
     ("Copycat treasuries proliferating",
-     "Are 10+ new public-co BTC treasuries being announced per month? Late-cycle behavior — peak supply of leveraged BTC vehicles."),
+     "10+ new public-co BTC treasuries announced per month? Late-cycle behavior — peak supply of leveraged BTC vehicles."),
     ("Insider Form 4 selling",
-     "Any unusual sales by Saylor or other officers (SEC EDGAR Form 4 filings)."),
+     "Unusual sales by Saylor or other officers (SEC EDGAR Form 4 filings)."),
     ("Convertible refinancing deteriorating",
-     "Stalled converts, wider conversion premiums, or new issues priced at higher coupons. Complementary to P7 — preferred yields catch the same stress."),
+     "Stalled converts, wider conversion premiums, higher coupons. Complementary to P7 — preferred yields catch the same stress."),
 ]
 
 cols = st.columns(2, gap="large")
@@ -559,7 +747,8 @@ for i, (title, body) in enumerate(manual):
 st.markdown(
     """
     <div class="footer-note">
-      Data: yfinance (MSTR, BTC-USD, preferreds, share-count history) · bitcointreasuries.net (BTC holdings) · OKX (BTC perp funding).<br>
+      Data: yfinance (MSTR, BTC-USD, preferreds) · OKX (BTC perp funding) · bitcointreasuries.net (live BTC count) ·
+      hardcoded milestones for historical BTC holdings + share count (sourced from public 8-K filings, interpolated daily).<br>
       Signal calibration anchored to Feb-2021 (~2.7x mNAV) and Nov-2024 (~3.1x mNAV) tops. Future cycles may differ.<br>
       <b>Not financial advice.</b> Snapshots refresh every 30 min via GitHub Actions; Streamlit Cloud auto-redeploys on commit.
     </div>

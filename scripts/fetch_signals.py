@@ -1,8 +1,24 @@
 """
 Fetch quantifiable MSTR sell-high signals and persist them.
 
-Signals are organized to mirror the 6-point sell-high playbook from the
-deep-research report (see README):
+Architecture
+------------
+We maintain TWO time-series files:
+
+  data/daily_history.csv   — one row PER DAY going back to 2015 (or as far as
+                             yfinance allows). This is the source for the long
+                             historical charts in the dashboard.
+                             Updated incrementally: we only recompute today's
+                             row on each cron run; older rows are preserved.
+
+  data/history.csv         — 30-min snapshot stream, one row per cron tick.
+                             Used for fine-grained recent monitoring.
+
+  data/latest.json         — most recent snapshot (mirror of last daily row +
+                             intraday-only fields like options IV, funding).
+
+Signals are organized to mirror the 8-point sell-high playbook from the
+deep-research report:
 
   P1  mNAV ≥ 2.5–3.0x = euphoria zone
   P2  MSTR tops BEFORE BTC — lead/lag divergence
@@ -12,8 +28,6 @@ deep-research report (see README):
   P6  MSTR/BTC ratio at multi-year extreme (multiple off cycle low)
   P7  STRC/STRF/STRK/STRD credit-spread stress (capital-structure health)
   P8  BTC perp funding extremely positive (leverage saturation)
-
-Runs every 30 min via GitHub Actions.
 """
 
 from __future__ import annotations
@@ -36,20 +50,20 @@ DATA.mkdir(exist_ok=True)
 
 LATEST = DATA / "latest.json"
 HISTORY = DATA / "history.csv"
-PRICE_HISTORY = DATA / "price_history.csv"
+DAILY = DATA / "daily_history.csv"
 
-# Fallback BTC holdings — updated by the scraper below when reachable.
-# Source of truth: https://www.strategy.com/purchases
+sys.path.insert(0, str(ROOT / "scripts"))
+from historical_milestones import daily_btc_holdings, daily_diluted_shares  # noqa: E402
+
+# Fallback BTC holdings for live mNAV when scrape fails.
 FALLBACK_BTC_HOLDINGS = 818_334
-FALLBACK_AVG_COST = 70_982  # USD per BTC, average acquisition cost
+FALLBACK_AVG_COST = 70_982
+FALLBACK_DILUTED_SHARES = 350_386_842
 
-# Diluted share count fallback (Class A + Class B + assumed convert/preferred dilution).
-FALLBACK_DILUTED_SHARES = 350_000_000
-
-# Strategy preferred tickers — used for capital-structure stress signal.
 PREFERRED_TICKERS = ["STRC", "STRF", "STRK", "STRD"]
 
 
+# ───────────────────── helpers / fetchers ───────────────────────────────
 def _safe(fn, default=None):
     try:
         return fn()
@@ -58,8 +72,7 @@ def _safe(fn, default=None):
         return default
 
 
-# ─────────────────────────── data fetchers ──────────────────────────────
-def fetch_btc_holdings() -> tuple[int, float]:
+def fetch_btc_holdings_live() -> tuple[int, float]:
     url = "https://bitcointreasuries.net/embed/style2"
     try:
         r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
@@ -74,108 +87,73 @@ def fetch_btc_holdings() -> tuple[int, float]:
     return FALLBACK_BTC_HOLDINGS, FALLBACK_AVG_COST
 
 
-def fetch_prices() -> dict:
-    mstr = yf.Ticker("MSTR")
-    btc = yf.Ticker("BTC-USD")
-
-    mstr_hist = mstr.history(period="2y", interval="1d", auto_adjust=True)
-    btc_hist = btc.history(period="2y", interval="1d", auto_adjust=True)
-
-    mstr_close = mstr_hist["Close"].copy()
-    btc_close = btc_hist["Close"].copy()
-    mstr_close.index = pd.to_datetime(mstr_close.index).tz_localize(None).normalize()
-    btc_close.index = pd.to_datetime(btc_close.index).tz_localize(None).normalize()
-
-    info = _safe(lambda: mstr.fast_info, {}) or {}
-    shares = int(info.get("shares") or FALLBACK_DILUTED_SHARES)
-
-    return {
-        "mstr_price": float(mstr_close.iloc[-1]),
-        "btc_price": float(btc_close.iloc[-1]),
-        "mstr_shares": shares,
-        "mstr_history": mstr_close,
-        "btc_history": btc_close,
-    }
+def fetch_long_prices() -> tuple[pd.Series, pd.Series]:
+    """Pull the longest available daily history for MSTR and BTC."""
+    mstr_hist = yf.Ticker("MSTR").history(period="max", interval="1d", auto_adjust=True)
+    btc_hist = yf.Ticker("BTC-USD").history(period="max", interval="1d", auto_adjust=True)
+    mstr = mstr_hist["Close"].copy()
+    btc = btc_hist["Close"].copy()
+    mstr.index = pd.to_datetime(mstr.index).tz_localize(None).normalize()
+    btc.index = pd.to_datetime(btc.index).tz_localize(None).normalize()
+    return mstr.astype(float), btc.astype(float)
 
 
-def fetch_shares_history() -> pd.Series | None:
-    """Daily diluted-shares history for MSTR — drives the ATM-pace signal."""
-    try:
-        end = datetime.utcnow().date()
-        start = end - timedelta(days=400)
-        s = yf.Ticker("MSTR").get_shares_full(start=start, end=end)
-        if s is None or len(s) == 0:
-            return None
-        s.index = pd.to_datetime(s.index).tz_localize(None).normalize()
-        s = s[~s.index.duplicated(keep="last")].sort_index()
-        return s.astype(float)
-    except Exception as e:  # noqa: BLE001
-        print(f"  warn: shares history fetch failed: {e}", file=sys.stderr)
-        return None
-
-
-def fetch_preferred_yields() -> dict:
-    """Pull current price + estimated yield for each MSTR preferred."""
+def fetch_preferred_history() -> dict[str, pd.DataFrame]:
+    """Daily price history for each Strategy preferred (since listing)."""
     out = {}
     for sym in PREFERRED_TICKERS:
         try:
             t = yf.Ticker(sym)
-            hist = t.history(period="60d", interval="1d", auto_adjust=False)
+            hist = t.history(period="max", interval="1d", auto_adjust=False)
             if hist.empty:
-                out[sym] = {"price": None, "yield_pct": None, "drawdown_30d_pct": None}
+                out[sym] = pd.DataFrame()
                 continue
-            price = float(hist["Close"].iloc[-1])
-            high_30d = float(hist["Close"].tail(30).max())
-            dd = (price / high_30d - 1) * 100 if high_30d else None
-            # Annual dividend from yfinance info — preferred is fixed-coupon par $100.
+            df = hist[["Close"]].copy()
+            df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+            df.columns = ["price"]
             info = _safe(lambda: t.info, {}) or {}
-            div_rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
-            yld = (float(div_rate) / price * 100) if (div_rate and price) else None
-            out[sym] = {
-                "price": round(price, 2),
-                "yield_pct": round(yld, 2) if yld else None,
-                "drawdown_30d_pct": round(dd, 2) if dd is not None else None,
-            }
+            div = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
+            df["yield_pct"] = (float(div) / df["price"] * 100) if div else np.nan
+            df["sym"] = sym
+            out[sym] = df
         except Exception as e:  # noqa: BLE001
-            print(f"  warn: preferred {sym} failed: {e}", file=sys.stderr)
-            out[sym] = {"price": None, "yield_pct": None, "drawdown_30d_pct": None}
+            print(f"  warn: preferred {sym}: {e}", file=sys.stderr)
+            out[sym] = pd.DataFrame()
     return out
 
 
-def fetch_btc_funding() -> dict:
-    """
-    Latest + trailing-7d BTC perpetual funding rate.
-    OKX is used (Binance and Bybit are geo-blocked from US/CloudFront).
-    """
-    try:
-        url = "https://www.okx.com/api/v5/public/funding-rate-history"
-        r = requests.get(url, params={"instId": "BTC-USDT-SWAP", "limit": 30}, timeout=10)
-        r.raise_for_status()
-        rows = r.json().get("data", [])
-        if not rows:
-            raise RuntimeError("OKX returned no funding rows")
-        # OKX returns newest first; convert to oldest→newest for clarity.
-        rows = list(reversed(rows))
-        rates = [float(x["realizedRate"]) * 100 for x in rows]  # pct per 8h
-        latest = rates[-1]
-        avg_7d = float(np.mean(rates[-21:])) if len(rates) >= 21 else float(np.mean(rates))
-        annualized = avg_7d * 1095  # 3 settles/day * 365
-        return {
-            "latest_pct_per_8h": round(latest, 4),
-            "avg_7d_pct_per_8h": round(avg_7d, 4),
-            "annualized_pct": round(annualized, 2),
-        }
-    except Exception as e:  # noqa: BLE001
-        print(f"  warn: BTC funding fetch failed: {e}", file=sys.stderr)
-        return {"latest_pct_per_8h": None, "avg_7d_pct_per_8h": None, "annualized_pct": None}
-
-
-# ─────────────────────── signal computations ────────────────────────────
-def realized_vol(close: pd.Series, window: int = 30) -> float:
-    rets = np.log(close / close.shift(1)).dropna().tail(window)
-    if len(rets) < 5:
-        return float("nan")
-    return float(rets.std() * math.sqrt(252) * 100)
+def fetch_funding_history(days: int = 365) -> pd.DataFrame:
+    """OKX BTC-USDT-SWAP funding history (paginated). Returns DataFrame indexed by funding_time."""
+    url = "https://www.okx.com/api/v5/public/funding-rate-history"
+    rows: list[dict] = []
+    after: str | None = None  # OKX: 'after' = return rows with fundingTime < this
+    cutoff_ms = int((datetime.utcnow() - timedelta(days=days)).timestamp() * 1000)
+    for page in range(60):  # cap pagination
+        params = {"instId": "BTC-USDT-SWAP", "limit": 100}
+        if after:
+            params["after"] = after
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            chunk = r.json().get("data", [])
+            if not chunk:
+                break
+            rows.extend(chunk)
+            oldest_ts = min(int(x["fundingTime"]) for x in chunk)
+            if oldest_ts <= cutoff_ms:
+                break
+            after = str(oldest_ts)
+        except Exception as e:  # noqa: BLE001
+            print(f"  warn: funding history page {page}: {e}", file=sys.stderr)
+            break
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["funding_time"] = pd.to_datetime(df["fundingTime"].astype(int), unit="ms")
+    df["rate_pct_per_8h"] = df["realizedRate"].astype(float) * 100
+    df = df[["funding_time", "rate_pct_per_8h"]].drop_duplicates("funding_time").sort_values("funding_time")
+    df = df.set_index("funding_time")
+    return df
 
 
 def implied_vol_atm(ticker: str = "MSTR") -> float:
@@ -204,139 +182,102 @@ def implied_vol_atm(ticker: str = "MSTR") -> float:
         return float("nan")
 
 
-def lead_lag_divergence(mstr: pd.Series, btc: pd.Series) -> dict:
-    """
-    Playbook Signal #2: MSTR tops BEFORE BTC.
+# ─────────────────── daily-resolution signal table ──────────────────────
+def build_daily_history(
+    mstr: pd.Series,
+    btc: pd.Series,
+    pref_hist: dict[str, pd.DataFrame],
+    funding: pd.DataFrame,
+) -> pd.DataFrame:
+    """Compute every signal at daily resolution, since BTC pivot when applicable."""
 
-    Detect by tracking the MSTR/BTC ratio's drawdown from its rolling 90d peak
-    versus BTC's drawdown from its all-time high. When the ratio is rolling
-    over (≥10% off its 90d peak) while BTC is still pinned to ATH (≤5% off),
-    that divergence = MSTR cycle top is in.
-    """
-    pair = pd.concat([mstr.rename("mstr"), btc.rename("btc")], axis=1).dropna()
-    pair["ratio"] = pair["mstr"] / pair["btc"]
-    ratio = pair["ratio"]
-    btc_close = pair["btc"]
+    holdings = daily_btc_holdings(end_date=mstr.index.max())
+    shares = daily_diluted_shares(end_date=mstr.index.max())
 
-    ratio_peak_90d = float(ratio.tail(90).max())
-    ratio_dd_pct = float((ratio.iloc[-1] / ratio_peak_90d - 1) * 100)
-    btc_ath = float(btc_close.max())
-    btc_dd_pct = float((btc_close.iloc[-1] / btc_ath - 1) * 100)
+    # Master daily index — union of all dates from MSTR's full history.
+    idx = pd.date_range(mstr.index.min(), mstr.index.max(), freq="D")
+    df = pd.DataFrame(index=idx)
+    df.index.name = "date"
 
-    diverging = (ratio_dd_pct <= -10) and (btc_dd_pct >= -5)
+    df["mstr"] = mstr.reindex(idx).ffill()
+    df["btc"] = btc.reindex(idx).ffill()
+    df["btc_holdings"] = holdings.reindex(idx).ffill()
+    df["diluted_shares"] = shares.reindex(idx).ffill()
 
-    return {
-        "ratio_dd_from_90d_peak_pct": round(ratio_dd_pct, 2),
-        "btc_dd_from_ath_pct": round(btc_dd_pct, 2),
-        "lead_lag_divergence_flag": bool(diverging),
-    }
+    df["btc_nav"] = df["btc_holdings"] * df["btc"]
+    df["market_cap"] = df["mstr"] * df["diluted_shares"]
+    df["mnav"] = df["market_cap"] / df["btc_nav"]
+    df["ratio"] = df["mstr"] / df["btc"]
 
+    # P2 — lead/lag: ratio drawdown from rolling-90d peak vs BTC drawdown from running ATH.
+    df["ratio_peak_90d"] = df["ratio"].rolling(90, min_periods=10).max()
+    df["ratio_dd_from_90d_peak_pct"] = (df["ratio"] / df["ratio_peak_90d"] - 1) * 100
+    df["btc_ath_running"] = df["btc"].cummax()
+    df["btc_dd_from_ath_pct"] = (df["btc"] / df["btc_ath_running"] - 1) * 100
+    df["lead_lag_diverging"] = (df["ratio_dd_from_90d_peak_pct"] <= -10) & (df["btc_dd_from_ath_pct"] >= -5)
 
-def ratio_off_cycle_low(mstr: pd.Series, btc: pd.Series) -> dict:
-    """
-    Playbook Signal #6: MSTR/BTC ratio at multi-year extreme (3–5x off cycle low).
-    """
-    pair = pd.concat([mstr.rename("mstr"), btc.rename("btc")], axis=1).dropna()
-    ratio = pair["mstr"] / pair["btc"]
-    cycle_low = float(ratio.tail(730).min())
-    multiple = float(ratio.iloc[-1] / cycle_low) if cycle_low else float("nan")
-    return {
-        "ratio_multiple_off_2y_low": round(multiple, 2),
-        "ratio_2y_low": cycle_low,
-    }
+    # P3 — ATM issuance: 30d / 90d annualized share growth.
+    df["shares_30d_growth"] = df["diluted_shares"].pct_change(30) * 100
+    df["shares_90d_growth"] = df["diluted_shares"].pct_change(90) * 100
+    df["shares_30d_annualized_pct"] = df["shares_30d_growth"] * (365 / 30)
+    df["shares_90d_annualized_pct"] = df["shares_90d_growth"] * (365 / 90)
+    df["shares_acceleration"] = (
+        (df["shares_30d_annualized_pct"] > df["shares_90d_annualized_pct"] * 1.2)
+        & (df["shares_90d_annualized_pct"] > 0)
+    )
 
+    # P5 — realized vol + compound gamma flag.
+    rets = np.log(df["mstr"] / df["mstr"].shift(1))
+    df["realized_vol_30d_pct"] = rets.rolling(30).std() * math.sqrt(252) * 100
+    df["realized_vol_90d_pct"] = rets.rolling(90).std() * math.sqrt(252) * 100
+    df["gamma_armed"] = (df["realized_vol_30d_pct"] > 100) & (df["mnav"] > 2.5)
+    df["gamma_elevated"] = (df["realized_vol_30d_pct"] > 80) & (df["mnav"] > 2.0)
 
-def atm_issuance_pace(shares_hist: pd.Series | None, current_shares: int) -> dict:
-    """
-    Playbook Signal #3: Accelerated ATM equity issuance.
+    # P6 — multiple off trailing-2y low.
+    df["ratio_2y_low"] = df["ratio"].rolling(730, min_periods=60).min()
+    df["ratio_multiple_off_2y_low"] = df["ratio"] / df["ratio_2y_low"]
 
-    yfinance.get_shares_full returns only filing-date entries, so we reindex
-    to a daily grid and forward-fill, then compute share growth over trailing
-    30/90/365 days. Acceleration (30d annualized growth > 90d) means Saylor
-    is monetizing the premium more aggressively recently.
-    """
-    null = {
-        "shares_30d_growth_pct": None,
-        "shares_90d_growth_pct": None,
-        "shares_30d_annualized_pct": None,
-        "shares_90d_annualized_pct": None,
-        "shares_365d_growth_pct": None,
-        "shares_acceleration_flag": None,
-    }
-    if shares_hist is None or len(shares_hist) < 5:
-        return null
+    # P7 — preferred yield (max across the four).
+    pref_yield = pd.DataFrame(index=idx)
+    for sym, h in pref_hist.items():
+        if h.empty:
+            continue
+        pref_yield[sym] = h["yield_pct"].reindex(idx).ffill()
+    if not pref_yield.empty:
+        df["preferred_max_yield_pct"] = pref_yield.max(axis=1)
+    else:
+        df["preferred_max_yield_pct"] = np.nan
+    df["credit_stress"] = df["preferred_max_yield_pct"] > 12
 
-    s = shares_hist.copy()
-    # Append today as the most recent share count if it differs materially.
-    today = pd.Timestamp.utcnow().normalize().tz_localize(None)
-    if current_shares and (today not in s.index or abs(s.iloc[-1] - current_shares) / max(current_shares, 1) > 0.005):
-        s.loc[today] = float(current_shares)
-    s = s.sort_index()
+    # P8 — BTC perp funding (annualized, smoothed 7d).
+    if not funding.empty:
+        f_daily = funding["rate_pct_per_8h"].resample("1D").mean()
+        df["btc_funding_8h_pct"] = f_daily.reindex(idx).ffill()
+        df["btc_funding_annualized_pct"] = df["btc_funding_8h_pct"].rolling(7, min_periods=1).mean() * 1095
+    else:
+        df["btc_funding_8h_pct"] = np.nan
+        df["btc_funding_annualized_pct"] = np.nan
 
-    # Reindex to daily and forward-fill so windowed comparisons work.
-    daily = pd.date_range(s.index.min(), s.index.max(), freq="D")
-    s_daily = s.reindex(daily).ffill()
+    # mNAV becomes meaningful only after the BTC pivot.
+    df.loc[df.index < pd.Timestamp("2020-08-11"), [
+        "mnav", "ratio_dd_from_90d_peak_pct", "ratio_multiple_off_2y_low",
+        "lead_lag_diverging", "gamma_armed", "gamma_elevated",
+    ]] = np.nan
 
-    if len(s_daily) < 31:
-        return null
-
-    last = float(s_daily.iloc[-1])
-
-    def growth(days: int) -> float | None:
-        if len(s_daily) <= days:
-            return None
-        prior = float(s_daily.iloc[-days - 1])
-        return (last / prior - 1) * 100 if prior else None
-
-    g30 = growth(30)
-    g90 = growth(90)
-    g365 = growth(365)
-    g30_ann = g30 * (365 / 30) if g30 is not None else None
-    g90_ann = g90 * (365 / 90) if g90 is not None else None
-    accel = (g30_ann is not None and g90_ann is not None
-             and g90_ann > 0 and g30_ann > g90_ann * 1.2)
-
-    return {
-        "shares_30d_growth_pct": round(g30, 2) if g30 is not None else None,
-        "shares_90d_growth_pct": round(g90, 2) if g90 is not None else None,
-        "shares_30d_annualized_pct": round(g30_ann, 2) if g30_ann is not None else None,
-        "shares_90d_annualized_pct": round(g90_ann, 2) if g90_ann is not None else None,
-        "shares_365d_growth_pct": round(g365, 2) if g365 is not None else None,
-        "shares_acceleration_flag": bool(accel) if accel is not None else None,
-    }
+    keep = [
+        "mstr", "btc", "btc_holdings", "diluted_shares", "market_cap", "btc_nav",
+        "mnav", "ratio",
+        "ratio_dd_from_90d_peak_pct", "btc_dd_from_ath_pct", "lead_lag_diverging",
+        "shares_30d_annualized_pct", "shares_90d_annualized_pct", "shares_acceleration",
+        "realized_vol_30d_pct", "realized_vol_90d_pct", "gamma_armed", "gamma_elevated",
+        "ratio_multiple_off_2y_low",
+        "preferred_max_yield_pct", "credit_stress",
+        "btc_funding_8h_pct", "btc_funding_annualized_pct",
+    ]
+    return df[keep].round(6)
 
 
-def gamma_squeeze_signal(rv30: float, mnav: float) -> dict:
-    """
-    Playbook Signal #5: Blow-off gamma squeeze.
-    Compound trigger from the report: RV30 > 100% AND mNAV > 2.5x.
-    """
-    armed = (not math.isnan(rv30)) and (not math.isnan(mnav)) and rv30 > 100 and mnav > 2.5
-    elevated = (not math.isnan(rv30)) and (not math.isnan(mnav)) and rv30 > 80 and mnav > 2.0
-    return {
-        "gamma_squeeze_armed": bool(armed),
-        "gamma_squeeze_elevated": bool(elevated),
-    }
-
-
-def credit_stress(prefs: dict) -> dict:
-    """
-    Playbook Signal #7: Capital structure stress.
-    Aggregate the worst-case yield + max 30d drawdown across the four prefs.
-    """
-    yields = [v["yield_pct"] for v in prefs.values() if v.get("yield_pct") is not None]
-    drawdowns = [v["drawdown_30d_pct"] for v in prefs.values() if v.get("drawdown_30d_pct") is not None]
-    max_yield = max(yields) if yields else None
-    worst_dd = min(drawdowns) if drawdowns else None
-    flag = (max_yield is not None and max_yield > 12) or (worst_dd is not None and worst_dd < -8)
-    return {
-        "preferred_max_yield_pct": max_yield,
-        "preferred_worst_30d_drawdown_pct": worst_dd,
-        "credit_stress_flag": bool(flag),
-    }
-
-
-# ──────────────────────────── zoning ────────────────────────────────────
+# ─────────────────────────── snapshot ───────────────────────────────────
 def mnav_zone(mnav: float) -> tuple[str, str, str]:
     if math.isnan(mnav):
         return "Unknown", "#6b7280", "Wait for data"
@@ -353,89 +294,93 @@ def mnav_zone(mnav: float) -> tuple[str, str, str]:
     return "Max Sell", "#dc2626", "Dump aggressively"
 
 
-# ──────────────────────────── orchestrator ──────────────────────────────
-def build_snapshot() -> tuple[dict, pd.Series, pd.Series]:
-    print("Fetching BTC holdings…")
-    holdings, avg_cost = fetch_btc_holdings()
-    print(f"  holdings={holdings:,} BTC")
+def build_snapshot(daily: pd.DataFrame, live_holdings: int, live_shares: int) -> dict:
+    last = daily.iloc[-1]
+    iv = implied_vol_atm("MSTR")
 
-    print("Fetching prices…")
-    p = fetch_prices()
-    mstr_px, btc_px, shares = p["mstr_price"], p["btc_price"], p["mstr_shares"]
-    mstr_hist, btc_hist = p["mstr_history"], p["btc_history"]
+    # Per-preferred current snapshot
+    prefs_now = {}
+    for sym in PREFERRED_TICKERS:
+        try:
+            t = yf.Ticker(sym)
+            h = t.history(period="60d", interval="1d", auto_adjust=False)
+            if h.empty:
+                prefs_now[sym] = {"price": None, "yield_pct": None, "drawdown_30d_pct": None}
+                continue
+            p = float(h["Close"].iloc[-1])
+            high30 = float(h["Close"].tail(30).max())
+            dd = (p / high30 - 1) * 100 if high30 else None
+            info = _safe(lambda: t.info, {}) or {}
+            div = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
+            yld = (float(div) / p * 100) if div and p else None
+            prefs_now[sym] = {
+                "price": round(p, 2),
+                "yield_pct": round(yld, 2) if yld else None,
+                "drawdown_30d_pct": round(dd, 2) if dd is not None else None,
+            }
+        except Exception as e:  # noqa: BLE001
+            print(f"  warn: preferred snapshot {sym}: {e}", file=sys.stderr)
+            prefs_now[sym] = {"price": None, "yield_pct": None, "drawdown_30d_pct": None}
 
-    nav = holdings * btc_px
-    market_cap = mstr_px * shares
-    mnav = market_cap / nav if nav else float("nan")
+    # Funding snapshot
+    fund_8h = float(last["btc_funding_8h_pct"]) if pd.notna(last["btc_funding_8h_pct"]) else None
+    fund_ann = float(last["btc_funding_annualized_pct"]) if pd.notna(last["btc_funding_annualized_pct"]) else None
 
-    rv30 = realized_vol(mstr_hist, 30)
-    rv90 = realized_vol(mstr_hist, 90)
-    iv30 = implied_vol_atm("MSTR")
-
-    print("Fetching shares history (for ATM pace)…")
-    shares_hist = fetch_shares_history()
-    atm = atm_issuance_pace(shares_hist, shares)
-
-    print("Fetching preferred yields…")
-    prefs = fetch_preferred_yields()
-    credit = credit_stress(prefs)
-
-    print("Fetching BTC funding…")
-    funding = fetch_btc_funding()
-
-    lead_lag = lead_lag_divergence(mstr_hist, btc_hist)
-    cycle = ratio_off_cycle_low(mstr_hist, btc_hist)
-    gamma = gamma_squeeze_signal(rv30, mnav)
+    mnav = float(last["mnav"]) if pd.notna(last["mnav"]) else float("nan")
     zone, color, action = mnav_zone(mnav)
 
-    snapshot = {
+    snap = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        # core
-        "mstr_price": round(mstr_px, 2),
-        "btc_price": round(btc_px, 2),
-        "btc_holdings": holdings,
-        "btc_avg_cost": round(avg_cost, 2),
-        "diluted_shares": shares,
-        "market_cap_b": round(market_cap / 1e9, 3),
-        "btc_nav_b": round(nav / 1e9, 3),
-        # P1
+        "mstr_price": round(float(last["mstr"]), 2),
+        "btc_price": round(float(last["btc"]), 2),
+        "btc_holdings": int(last["btc_holdings"]),
+        "btc_avg_cost": FALLBACK_AVG_COST,
+        "diluted_shares": int(last["diluted_shares"]),
+        "market_cap_b": round(float(last["market_cap"]) / 1e9, 3),
+        "btc_nav_b": round(float(last["btc_nav"]) / 1e9, 3),
         "mnav": round(mnav, 4),
-        "mnav_zone": zone,
-        "mnav_color": color,
-        "mnav_action": action,
-        # P2
-        **lead_lag,
-        # P3
-        **atm,
-        # P5
-        "realized_vol_30d_pct": round(rv30, 2),
-        "realized_vol_90d_pct": round(rv90, 2),
-        "implied_vol_30d_pct": round(iv30, 2) if not math.isnan(iv30) else None,
-        **gamma,
-        # P6
-        **cycle,
-        # P7
-        "preferreds": prefs,
-        **credit,
-        # P8
-        "btc_funding": funding,
+        "mnav_zone": zone, "mnav_color": color, "mnav_action": action,
+        "ratio_dd_from_90d_peak_pct": round(float(last["ratio_dd_from_90d_peak_pct"]), 2),
+        "btc_dd_from_ath_pct": round(float(last["btc_dd_from_ath_pct"]), 2),
+        "lead_lag_divergence_flag": bool(last["lead_lag_diverging"]),
+        "shares_30d_annualized_pct": round(float(last["shares_30d_annualized_pct"]), 2) if pd.notna(last["shares_30d_annualized_pct"]) else None,
+        "shares_90d_annualized_pct": round(float(last["shares_90d_annualized_pct"]), 2) if pd.notna(last["shares_90d_annualized_pct"]) else None,
+        "shares_acceleration_flag": bool(last["shares_acceleration"]),
+        "realized_vol_30d_pct": round(float(last["realized_vol_30d_pct"]), 2),
+        "realized_vol_90d_pct": round(float(last["realized_vol_90d_pct"]), 2),
+        "implied_vol_30d_pct": round(iv, 2) if not math.isnan(iv) else None,
+        "gamma_squeeze_armed": bool(last["gamma_armed"]),
+        "gamma_squeeze_elevated": bool(last["gamma_elevated"]),
+        "ratio_multiple_off_2y_low": round(float(last["ratio_multiple_off_2y_low"]), 2),
+        "ratio_2y_low": float(daily["ratio"].rolling(730, min_periods=60).min().iloc[-1]),
+        "preferreds": prefs_now,
+        "preferred_max_yield_pct": round(float(last["preferred_max_yield_pct"]), 2) if pd.notna(last["preferred_max_yield_pct"]) else None,
+        "preferred_worst_30d_drawdown_pct": min(
+            (v["drawdown_30d_pct"] for v in prefs_now.values() if v["drawdown_30d_pct"] is not None),
+            default=None,
+        ),
+        "credit_stress_flag": bool(last["credit_stress"]),
+        "btc_funding": {
+            "latest_pct_per_8h": round(fund_8h, 4) if fund_8h is not None else None,
+            "annualized_pct": round(fund_ann, 2) if fund_ann is not None else None,
+        },
     }
-    return snapshot, mstr_hist, btc_hist
+    return snap
 
 
-def append_history(row: dict) -> None:
+# ─────────────────────────── persistence ────────────────────────────────
+def append_intraday(snap: dict) -> None:
     cols = [
         "timestamp_utc", "mstr_price", "btc_price", "btc_holdings",
-        "diluted_shares", "market_cap_b", "btc_nav_b",
-        "mnav",
+        "diluted_shares", "market_cap_b", "btc_nav_b", "mnav",
         "ratio_dd_from_90d_peak_pct", "btc_dd_from_ath_pct", "lead_lag_divergence_flag",
-        "shares_30d_growth_pct", "shares_90d_growth_pct", "shares_30d_annualized_pct", "shares_90d_annualized_pct", "shares_acceleration_flag",
+        "shares_30d_annualized_pct", "shares_90d_annualized_pct", "shares_acceleration_flag",
         "realized_vol_30d_pct", "realized_vol_90d_pct", "implied_vol_30d_pct",
         "gamma_squeeze_armed", "gamma_squeeze_elevated",
         "ratio_multiple_off_2y_low",
         "preferred_max_yield_pct", "preferred_worst_30d_drawdown_pct", "credit_stress_flag",
     ]
-    df_row = pd.DataFrame([{k: row.get(k) for k in cols}])
+    df_row = pd.DataFrame([{k: snap.get(k) for k in cols}])
     if HISTORY.exists():
         existing = pd.read_csv(HISTORY)
         df_row = pd.concat([existing, df_row], ignore_index=True)
@@ -444,25 +389,69 @@ def append_history(row: dict) -> None:
     df_row.to_csv(HISTORY, index=False)
 
 
-def write_price_history(mstr_hist: pd.Series, btc_hist: pd.Series) -> None:
-    df = pd.concat([mstr_hist.rename("mstr"), btc_hist.rename("btc")], axis=1).dropna()
-    df.index.name = "date"
-    df = df.tail(730)
-    df.to_csv(PRICE_HISTORY)
+def write_daily(daily: pd.DataFrame, lookback_years: int = 10) -> None:
+    """Write rolling lookback_years of daily data to disk."""
+    cutoff = pd.Timestamp.utcnow().normalize().tz_localize(None) - pd.DateOffset(years=lookback_years)
+    rolling = daily[daily.index >= cutoff].copy()
+    rolling.to_csv(DAILY, index_label="date")
 
 
+# ─────────────────────────── orchestrator ───────────────────────────────
 def main() -> int:
-    snapshot, mstr_hist, btc_hist = build_snapshot()
-    LATEST.write_text(json.dumps(snapshot, indent=2))
-    append_history(snapshot)
-    write_price_history(mstr_hist, btc_hist)
-    print(f"\nP1 mNAV={snapshot['mnav']}  zone={snapshot['mnav_zone']}")
-    print(f"P2 lead-lag div={snapshot['lead_lag_divergence_flag']}  ratio_dd={snapshot['ratio_dd_from_90d_peak_pct']}%  btc_dd={snapshot['btc_dd_from_ath_pct']}%")
-    print(f"P3 ATM accel={snapshot['shares_acceleration_flag']}  30d_ann={snapshot['shares_30d_annualized_pct']}%")
-    print(f"P5 gamma armed={snapshot['gamma_squeeze_armed']}  elevated={snapshot['gamma_squeeze_elevated']}")
-    print(f"P6 ratio off cycle low={snapshot['ratio_multiple_off_2y_low']}x")
-    print(f"P7 credit stress={snapshot['credit_stress_flag']}  max_yield={snapshot['preferred_max_yield_pct']}%")
-    print(f"P8 BTC funding ann={snapshot['btc_funding']['annualized_pct']}%")
+    print("Fetching live BTC holdings…")
+    live_holdings, _ = fetch_btc_holdings_live()
+    print(f"  holdings={live_holdings:,} BTC")
+
+    print("Fetching long-window prices (MSTR, BTC)…")
+    mstr, btc = fetch_long_prices()
+    print(f"  MSTR rows: {len(mstr)}  span: {mstr.index.min().date()} → {mstr.index.max().date()}")
+    print(f"  BTC  rows: {len(btc)}  span: {btc.index.min().date()} → {btc.index.max().date()}")
+
+    print("Fetching preferred history…")
+    pref_hist = fetch_preferred_history()
+    for sym, h in pref_hist.items():
+        print(f"  {sym}: {len(h)} rows")
+
+    print("Fetching BTC funding history…")
+    funding = fetch_funding_history(days=400)
+    print(f"  funding rows: {len(funding)}")
+
+    print("Computing daily history table…")
+    daily = build_daily_history(mstr, btc, pref_hist, funding)
+    # Patch the most recent row with live values where stale.
+    last_idx = daily.index[-1]
+    daily.loc[last_idx, "btc_holdings"] = max(int(daily.loc[last_idx, "btc_holdings"]), int(live_holdings))
+    # Live shares from yfinance fast_info
+    live_shares_info = _safe(lambda: yf.Ticker("MSTR").fast_info.get("shares"), None)
+    if live_shares_info:
+        live_shares = int(live_shares_info)
+        daily.loc[last_idx, "diluted_shares"] = max(float(daily.loc[last_idx, "diluted_shares"]), float(live_shares))
+    else:
+        live_shares = FALLBACK_DILUTED_SHARES
+
+    # Recompute today's market_cap, btc_nav, mnav, ratio with patched values.
+    daily.loc[last_idx, "market_cap"] = daily.loc[last_idx, "mstr"] * daily.loc[last_idx, "diluted_shares"]
+    daily.loc[last_idx, "btc_nav"] = daily.loc[last_idx, "btc_holdings"] * daily.loc[last_idx, "btc"]
+    daily.loc[last_idx, "mnav"] = daily.loc[last_idx, "market_cap"] / daily.loc[last_idx, "btc_nav"]
+    daily.loc[last_idx, "ratio"] = daily.loc[last_idx, "mstr"] / daily.loc[last_idx, "btc"]
+
+    print("Writing daily_history.csv…")
+    write_daily(daily)
+
+    print("Building snapshot…")
+    snap = build_snapshot(daily, live_holdings, live_shares)
+    LATEST.write_text(json.dumps(snap, indent=2))
+    append_intraday(snap)
+
+    print(f"\nSummary:")
+    print(f"  daily rows: {len(daily)}  ({daily.index.min().date()} → {daily.index.max().date()})")
+    print(f"  P1 mNAV={snap['mnav']}  zone={snap['mnav_zone']}")
+    print(f"  P2 ratio_dd={snap['ratio_dd_from_90d_peak_pct']}%  btc_dd={snap['btc_dd_from_ath_pct']}%  diverging={snap['lead_lag_divergence_flag']}")
+    print(f"  P3 shares 30d ann={snap['shares_30d_annualized_pct']}%  accel={snap['shares_acceleration_flag']}")
+    print(f"  P5 RV30={snap['realized_vol_30d_pct']}%  armed={snap['gamma_squeeze_armed']}")
+    print(f"  P6 multiple off 2y low={snap['ratio_multiple_off_2y_low']}x")
+    print(f"  P7 max preferred yield={snap['preferred_max_yield_pct']}%  stress={snap['credit_stress_flag']}")
+    print(f"  P8 funding ann={snap['btc_funding']['annualized_pct']}%")
     return 0
 
 
