@@ -1,2 +1,2 @@
 timestamp_utc,mstr_price,btc_price,btc_holdings,diluted_shares,market_cap_b,btc_nav_b,mnav,mstr_btc_ratio,mstr_btc_ratio_z365,realized_vol_30d_pct,realized_vol_90d_pct,implied_vol_30d_pct,btc_drawdown_from_ath_pct,days_since_btc_ath,mstr_minus_btc_30d_pct,mstr_minus_btc_90d_pct,mstr_minus_btc_180d_pct
-2026-04-30T06:03:23+00:00,158.19,75561.73,818334,350386842,55.428,61.835,0.8964,0.002094,-0.975,67.79,83.58,50.0,-39.43,206,-8.04,9.28,-29.45
+2026-04-30T06:09:46+00:00,158.19,75615.17,818334,350386842,55.428,61.878,0.8958,0.002092,-0.975,67.79,83.58,50.0,-39.39,206,-8.12,9.21,-29.5
