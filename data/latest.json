@@ -1,28 +1,28 @@
 {
-  "timestamp_utc": "2026-05-01T15:54:04+00:00",
-  "mstr_price": 175.95,
-  "btc_price": 78316.04,
+  "timestamp_utc": "2026-05-01T16:54:28+00:00",
+  "mstr_price": 176.6,
+  "btc_price": 78250.1,
   "btc_holdings": 818334,
   "btc_avg_cost": 70982,
   "diluted_shares": 350386842,
-  "market_cap_b": 61.651,
-  "btc_nav_b": 64.089,
-  "mnav": 0.962,
+  "market_cap_b": 61.878,
+  "btc_nav_b": 64.035,
+  "mnav": 0.9663,
   "mnav_zone": "Fire Sale",
   "mnav_color": "#10b981",
   "mnav_action": "Aggressive accumulate",
-  "ratio_dd_from_90d_peak_pct": -2.04,
-  "btc_dd_from_ath_pct": -37.22,
+  "ratio_dd_from_90d_peak_pct": -1.6,
+  "btc_dd_from_ath_pct": -37.28,
   "lead_lag_divergence_flag": false,
   "shares_30d_annualized_pct": 16.61,
   "shares_90d_annualized_pct": 26.65,
   "shares_acceleration_flag": false,
-  "realized_vol_30d_pct": 59.73,
-  "realized_vol_90d_pct": 76.78,
-  "implied_vol_30d_pct": 76.31,
+  "realized_vol_30d_pct": 60.01,
+  "realized_vol_90d_pct": 76.87,
+  "implied_vol_30d_pct": 68.77,
   "gamma_squeeze_armed": false,
   "gamma_squeeze_elevated": false,
-  "ratio_multiple_off_2y_low": 1.33,
+  "ratio_multiple_off_2y_low": 1.34,
   "ratio_2y_low": 0.001685,
   "preferreds": {
     "STRC": {
@@ -31,26 +31,26 @@
       "drawdown_30d_pct": -0.15
     },
     "STRF": {
-      "price": 101.52,
-      "yield_pct": 9.85,
-      "drawdown_30d_pct": 0.0
+      "price": 100.5,
+      "yield_pct": 9.95,
+      "drawdown_30d_pct": -0.45
     },
     "STRK": {
-      "price": 78.65,
-      "yield_pct": 10.17,
+      "price": 78.79,
+      "yield_pct": 10.15,
       "drawdown_30d_pct": 0.0
     },
     "STRD": {
-      "price": 77.14,
-      "yield_pct": 12.96,
-      "drawdown_30d_pct": -1.17
+      "price": 77.05,
+      "yield_pct": 12.98,
+      "drawdown_30d_pct": -1.28
     }
   },
-  "preferred_max_yield_pct": 12.96,
-  "preferred_worst_30d_drawdown_pct": -1.17,
+  "preferred_max_yield_pct": 12.98,
+  "preferred_worst_30d_drawdown_pct": -1.28,
   "credit_stress_flag": true,
   "btc_funding": {
-    "latest_pct_per_8h": -0.0013,
-    "annualized_pct": -2.43
+    "latest_pct_per_8h": -0.002,
+    "annualized_pct": -2.53
   }
 }
