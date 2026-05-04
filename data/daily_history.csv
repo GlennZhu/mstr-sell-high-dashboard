@@ -1,5 +1,4 @@
 date,mstr,btc,btc_holdings,diluted_shares,market_cap,btc_nav,mnav,ratio,ratio_dd_from_90d_peak_pct,btc_dd_from_ath_pct,lead_lag_diverging,shares_30d_annualized_pct,shares_90d_annualized_pct,shares_acceleration,realized_vol_30d_pct,realized_vol_90d_pct,gamma_armed,gamma_elevated,ratio_multiple_off_2y_low,preferred_max_yield_pct,credit_stress,btc_funding_8h_pct,btc_funding_annualized_pct
-2016-05-03,18.034,450.303986,,120000000.0,2164080047.607422,,,0.040049,,-3.386693,False,0.0,0.0,False,24.023424,28.823647,False,False,,,False,,
 2016-05-04,18.007,446.721985,,120000000.0,2160839996.33789,,,0.040309,,-4.155216,False,0.0,0.0,False,23.792147,28.584506,False,False,,,False,,
 2016-05-05,17.983,447.976013,,120000000.0,2157959976.196289,,,0.040143,,-3.886163,False,0.0,0.0,False,23.674775,25.942345,False,False,,,False,,
 2016-05-06,18.257,459.602997,,120000000.0,2190839996.33789,,,0.039723,,-1.391578,False,0.0,0.0,False,24.078993,26.040033,False,False,,,False,,
