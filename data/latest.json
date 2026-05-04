@@ -1,25 +1,25 @@
 {
-  "timestamp_utc": "2026-05-04T14:37:59+00:00",
-  "mstr_price": 182.66,
-  "btc_price": 79460.49,
+  "timestamp_utc": "2026-05-04T16:28:39+00:00",
+  "mstr_price": 183.38,
+  "btc_price": 80204.93,
   "btc_holdings": 818334,
   "btc_avg_cost": 70982,
   "diluted_shares": 350386842,
-  "market_cap_b": 64.002,
-  "btc_nav_b": 65.025,
-  "mnav": 0.9843,
+  "market_cap_b": 64.252,
+  "btc_nav_b": 65.634,
+  "mnav": 0.9789,
   "mnav_zone": "Fire Sale",
   "mnav_color": "#10b981",
   "mnav_action": "Aggressive accumulate",
-  "ratio_dd_from_90d_peak_pct": 0.0,
-  "btc_dd_from_ath_pct": -36.31,
+  "ratio_dd_from_90d_peak_pct": -0.31,
+  "btc_dd_from_ath_pct": -35.71,
   "lead_lag_divergence_flag": false,
   "shares_30d_annualized_pct": 14.81,
   "shares_90d_annualized_pct": 25.53,
   "shares_acceleration_flag": false,
-  "realized_vol_30d_pct": 59.46,
-  "realized_vol_90d_pct": 75.66,
-  "implied_vol_30d_pct": 65.54,
+  "realized_vol_30d_pct": 59.57,
+  "realized_vol_90d_pct": 75.71,
+  "implied_vol_30d_pct": 72.08,
   "gamma_squeeze_armed": false,
   "gamma_squeeze_elevated": false,
   "ratio_multiple_off_2y_low": 1.36,
@@ -31,26 +31,26 @@
       "drawdown_30d_pct": -0.07
     },
     "STRF": {
-      "price": 100.86,
-      "yield_pct": 9.91,
-      "drawdown_30d_pct": -0.14
+      "price": 100.62,
+      "yield_pct": 9.94,
+      "drawdown_30d_pct": -0.37
     },
     "STRK": {
-      "price": 79.65,
-      "yield_pct": 10.04,
-      "drawdown_30d_pct": -0.05
+      "price": 78.01,
+      "yield_pct": 10.26,
+      "drawdown_30d_pct": -2.11
     },
     "STRD": {
-      "price": 77.27,
-      "yield_pct": 12.94,
-      "drawdown_30d_pct": -1.0
+      "price": 76.8,
+      "yield_pct": 13.02,
+      "drawdown_30d_pct": -1.6
     }
   },
-  "preferred_max_yield_pct": 12.94,
-  "preferred_worst_30d_drawdown_pct": -1.0,
+  "preferred_max_yield_pct": 13.02,
+  "preferred_worst_30d_drawdown_pct": -2.11,
   "credit_stress_flag": true,
   "btc_funding": {
-    "latest_pct_per_8h": 0.0047,
-    "annualized_pct": -0.77
+    "latest_pct_per_8h": 0.0016,
+    "annualized_pct": -1.25
   }
 }
