@@ -1,25 +1,25 @@
 {
-  "timestamp_utc": "2026-05-05T18:52:54+00:00",
-  "mstr_price": 186.2,
-  "btc_price": 81483.11,
+  "timestamp_utc": "2026-05-05T20:04:41+00:00",
+  "mstr_price": 186.9,
+  "btc_price": 81686.84,
   "btc_holdings": 818334,
   "btc_avg_cost": 70982,
   "diluted_shares": 350386842,
-  "market_cap_b": 65.243,
-  "btc_nav_b": 66.68,
-  "mnav": 0.9784,
+  "market_cap_b": 65.487,
+  "btc_nav_b": 66.847,
+  "mnav": 0.9797,
   "mnav_zone": "Fire Sale",
   "mnav_color": "#10b981",
   "mnav_action": "Aggressive accumulate",
-  "ratio_dd_from_90d_peak_pct": -0.75,
-  "btc_dd_from_ath_pct": -34.68,
+  "ratio_dd_from_90d_peak_pct": -0.63,
+  "btc_dd_from_ath_pct": -34.52,
   "lead_lag_divergence_flag": false,
   "shares_30d_annualized_pct": 14.21,
   "shares_90d_annualized_pct": 25.16,
   "shares_acceleration_flag": false,
   "realized_vol_30d_pct": 59.49,
-  "realized_vol_90d_pct": 75.51,
-  "implied_vol_30d_pct": 69.46,
+  "realized_vol_90d_pct": 75.53,
+  "implied_vol_30d_pct": 71.71,
   "gamma_squeeze_armed": false,
   "gamma_squeeze_elevated": false,
   "ratio_multiple_off_2y_low": 1.36,
@@ -31,23 +31,23 @@
       "drawdown_30d_pct": -0.06
     },
     "STRF": {
-      "price": 100.73,
-      "yield_pct": 9.93,
-      "drawdown_30d_pct": -0.27
+      "price": 100.61,
+      "yield_pct": 9.94,
+      "drawdown_30d_pct": -0.39
     },
     "STRK": {
-      "price": 78.03,
-      "yield_pct": 10.25,
-      "drawdown_30d_pct": -2.08
+      "price": 78.0,
+      "yield_pct": 10.26,
+      "drawdown_30d_pct": -2.12
     },
     "STRD": {
-      "price": 76.35,
+      "price": 76.31,
       "yield_pct": 13.1,
-      "drawdown_30d_pct": -2.18
+      "drawdown_30d_pct": -2.23
     }
   },
   "preferred_max_yield_pct": 13.1,
-  "preferred_worst_30d_drawdown_pct": -2.18,
+  "preferred_worst_30d_drawdown_pct": -2.23,
   "credit_stress_flag": true,
   "btc_funding": {
     "latest_pct_per_8h": -0.0012,
