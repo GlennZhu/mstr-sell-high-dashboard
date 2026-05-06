@@ -1,56 +1,56 @@
 {
-  "timestamp_utc": "2026-05-06T12:26:09+00:00",
-  "mstr_price": 186.9,
-  "btc_price": 80927.05,
+  "timestamp_utc": "2026-05-06T15:10:53+00:00",
+  "mstr_price": 183.6,
+  "btc_price": 81514.0,
   "btc_holdings": 818334,
   "btc_avg_cost": 70982,
   "diluted_shares": 350386842,
-  "market_cap_b": 65.487,
-  "btc_nav_b": 66.225,
-  "mnav": 0.9889,
+  "market_cap_b": 64.331,
+  "btc_nav_b": 66.706,
+  "mnav": 0.9644,
   "mnav_zone": "Fire Sale",
   "mnav_color": "#10b981",
   "mnav_action": "Aggressive accumulate",
-  "ratio_dd_from_90d_peak_pct": 0.0,
-  "btc_dd_from_ath_pct": -35.13,
+  "ratio_dd_from_90d_peak_pct": -2.47,
+  "btc_dd_from_ath_pct": -34.66,
   "lead_lag_divergence_flag": false,
-  "shares_30d_annualized_pct": 14.21,
-  "shares_90d_annualized_pct": 25.16,
+  "shares_30d_annualized_pct": 13.61,
+  "shares_90d_annualized_pct": 24.79,
   "shares_acceleration_flag": false,
-  "realized_vol_30d_pct": 59.49,
-  "realized_vol_90d_pct": 75.53,
-  "implied_vol_30d_pct": 50.0,
+  "realized_vol_30d_pct": 58.36,
+  "realized_vol_90d_pct": 68.31,
+  "implied_vol_30d_pct": 69.29,
   "gamma_squeeze_armed": false,
   "gamma_squeeze_elevated": false,
-  "ratio_multiple_off_2y_low": 1.37,
+  "ratio_multiple_off_2y_low": 1.34,
   "ratio_2y_low": 0.001685,
   "preferreds": {
     "STRC": {
-      "price": 99.96,
+      "price": 99.97,
       "yield_pct": 11.5,
-      "drawdown_30d_pct": -0.06
+      "drawdown_30d_pct": -0.04
     },
     "STRF": {
-      "price": 100.61,
+      "price": 100.56,
       "yield_pct": 9.94,
-      "drawdown_30d_pct": -0.39
+      "drawdown_30d_pct": -0.44
     },
     "STRK": {
-      "price": 78.0,
+      "price": 77.97,
       "yield_pct": 10.26,
-      "drawdown_30d_pct": -2.12
+      "drawdown_30d_pct": -2.16
     },
     "STRD": {
-      "price": 76.31,
-      "yield_pct": 13.1,
-      "drawdown_30d_pct": -2.23
+      "price": 76.58,
+      "yield_pct": 13.06,
+      "drawdown_30d_pct": -1.88
     }
   },
-  "preferred_max_yield_pct": 13.1,
-  "preferred_worst_30d_drawdown_pct": -2.23,
+  "preferred_max_yield_pct": 13.06,
+  "preferred_worst_30d_drawdown_pct": -2.16,
   "credit_stress_flag": true,
   "btc_funding": {
-    "latest_pct_per_8h": -0.0012,
-    "annualized_pct": -0.7
+    "latest_pct_per_8h": -0.0019,
+    "annualized_pct": -1.08
   }
 }
