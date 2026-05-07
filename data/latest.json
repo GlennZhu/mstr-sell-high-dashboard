@@ -1,5 +1,5 @@
 {
-  "timestamp_utc": "2026-05-07T02:31:21+00:00",
+  "timestamp_utc": "2026-05-07T05:58:08+00:00",
   "mstr_price": 186.82,
   "btc_price": 80927.05,
   "btc_holdings": 818334,
@@ -19,7 +19,7 @@
   "shares_acceleration_flag": false,
   "realized_vol_30d_pct": 57.8,
   "realized_vol_90d_pct": 68.2,
-  "implied_vol_30d_pct": 68.73,
+  "implied_vol_30d_pct": 50.0,
   "gamma_squeeze_armed": false,
   "gamma_squeeze_elevated": false,
   "ratio_multiple_off_2y_low": 1.37,
